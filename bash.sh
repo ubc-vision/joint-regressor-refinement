@@ -4,6 +4,8 @@ OUTPUT_DIR="/home/eric/human-body-pose/video_output"
 VIDEO_INPUT="/home/eric/human-body-pose/video_input"
 
 rm /home/eric/Detectron/output/*
+rm /home/eric/Detectron/input/*
+cp ${VIDEO_INPUT}/* /home/eric/Detectron/input
 
 cd /home/eric/Detectron
 python tools/infer_video.py \
@@ -13,6 +15,7 @@ python tools/infer_video.py \
     --wts https://dl.fbaipublicfiles.com/detectron/37698009/12_2017_baselines/e2e_keypoint_rcnn_R-101-FPN_s1x.yaml.08_45_57.YkrJgP6O/output/train/keypoints_coco_2014_train:keypoints_coco_2014_valminusminival/generalized_rcnn/model_final.pkl \
     $VIDEO_INPUT
 
+echo "inferring 3d keypoints"
 cd /home/eric/VideoPose3D/data
 python prepare_data_2d_custom.py -i /home/eric/Detectron/output -o myvideos
 
