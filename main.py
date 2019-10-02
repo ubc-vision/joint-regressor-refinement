@@ -110,7 +110,7 @@ def process_video(file_name):
 		# IMPORTANT
 		# these conversions are just for me. It might differ person to person
 		#this is because the points only represent the ankle and the middle of the face
-		height_multiplier = 1.13649012535/2
+		height_multiplier = 1.07644535047
 		#this is going to be different. Very rough estimate for now
 
 		# TODO 
@@ -119,11 +119,13 @@ def process_video(file_name):
 		# maybe you only need to get the length of the leg. 
 
 		height = 0
+		leg_length = 0
 
 		#average height of leg limbs
 		#maybe get the average across the entire set of data
 		height += (LA.norm(array[:, left_foot]-array[:, left_knee], axis = 1)+ LA.norm(array[:, right_foot]-array[:, right_knee], axis = 1))/2
 		height += (LA.norm(array[:, left_knee]-array[:, left_hip], axis = 1)+ LA.norm(array[:, right_knee]-array[:, right_hip], axis = 1))/2
+		leg_length = height
 		height += LA.norm(array[:, pelvis]-array[:, stomach], axis = 1)
 		height += LA.norm(array[:, stomach]-array[:, chest], axis = 1)
 		height += LA.norm(array[:, chest]-array[:, hair], axis = 1)
@@ -133,8 +135,9 @@ def process_video(file_name):
 		print(np.mean(height))
 
 		average_height = np.mean(height)
+		average_leg_length = np.mean(leg_length)
 
-		return average_height/height_multiplier
+		return average_height/height_multiplier, leg_length/height_multiplier
 
 	def move_ankles_to_feet(array):
 		moved_ankle_array = np.copy(array)
@@ -212,13 +215,16 @@ def process_video(file_name):
 			last_frame_left_foot_pos = left_foot_pos
 			last_frame_right_foot_pos = right_foot_pos
 
-
-		left_foot_forward = savitzky_golay(left_foot_forward, 11, 2)
-
 		fig = plt.figure()
+		plt.plot(left_foot_forward)
+
+		left_foot_forward = savitzky_golay(left_foot_forward, 101, 2)
+
+		
 		plt.plot(left_foot_forward)
 		plt.ylabel('left foot forward')
 		plt.savefig('video_output/{}_relative_foot_movement.png'.format(file_name[:-4]))
+		plt.close()
 
 		return left_foot_forward
 
@@ -266,8 +272,9 @@ def process_video(file_name):
 				ax.plot([array[frame, joint_a, 0], array[frame, joint_b, 0]], [array[frame, joint_a, 1], array[frame, joint_b, 1]], [array[frame, joint_a, 2], array[frame, joint_b, 2]],color = color)
 
 
-		anim = FuncAnimation(fig, draw_frame, frames=array.shape[0], interval=20)
-		anim.save('video_output/{}.gif'.format(file_name[:-4]), dpi=80)
+		anim = FuncAnimation(fig, draw_frame, frames=array.shape[0], interval=10)
+		anim.save('video_output/{}.mp4'.format(file_name[:-4]), dpi=80)
+		plt.close()
 		# plt.show()
 
 	def plot_limbs(array, normalize = False):
@@ -287,6 +294,7 @@ def process_video(file_name):
 			plt.ylabel('normalized length')
 
 			plt.savefig('video_output/{}_normalized.png'.format(file_name[:-4]))
+			plt.close()
 
 		else:
 
@@ -299,6 +307,7 @@ def process_video(file_name):
 
 			plt.ylabel('limb lengths')
 			plt.savefig('video_output/{}.png'.format(file_name[:-4]))
+			plt.close()
 
 	def return_limb_lengths(array, normalize = False):
 
@@ -334,6 +343,7 @@ def process_video(file_name):
 
 		return lengths_by_frame
 
+	#only normalize size based on the legs. 
 	def normalize_size(array):
 
 		normalized_array = np.zeros(array.shape)
@@ -352,7 +362,7 @@ def process_video(file_name):
 
 		strides = np.zeros(array.shape[0])
 
-		height = persons_height(array)
+		height, leg_length = persons_height(array)
 		actual_height = args.args.height
 		conversion = actual_height / height
 
@@ -370,6 +380,8 @@ def process_video(file_name):
 
 			#if they are not the same
 			if (bool_left_foot_forward[frame] * bool_left_foot_forward[frame-1] < 0):
+
+				#scale the left foot pos by the average_leg_length. divide this by this_length, multiply by average_length
 				left_foot_pos = array[frame-1, left_foot]
 				right_foot_pos = array[frame-1, right_foot]
 

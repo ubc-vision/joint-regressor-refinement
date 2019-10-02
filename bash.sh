@@ -6,6 +6,8 @@ VIDEO_INPUT="/home/eric/human-body-pose/video_input"
 rm /home/eric/Detectron/output/*
 rm /home/eric/Detectron/input/*
 cp ${VIDEO_INPUT}/* /home/eric/Detectron/input
+mv $OUTPUT_DIR/* "/home/eric/human-body-pose/output_archive"
+
 
 cd /home/eric/Detectron
 python tools/infer_video.py \
@@ -21,12 +23,28 @@ python prepare_data_2d_custom.py -i /home/eric/Detectron/output -o myvideos
 
 
 cd /home/eric/VideoPose3D
-for video in ${VIDEO_INPUT}/*
+for video in /home/eric/Detectron/input/*
 do
 	THIS_VIDEO=${video##*/}
 	echo THIS_VIDEO
-	python run.py -d custom -k myvideos -arc 3,3,3,3,3 -c checkpoint --evaluate pretrained_h36m_detectron_coco.bin --render --viz-subject $THIS_VIDEO --viz-action custom --viz-camera 0 --viz-video /home/eric/Detectron/input/$THIS_VIDEO --viz-output ${OUTPUT_DIR}/${THIS_VIDEO%.*}_video_output.mp4 --viz-export ${OUTPUT_DIR}/${THIS_VIDEO%.*}_numpy_output.npy --viz-size 6
+	python run.py \
+	-d custom \
+	-k myvideos \
+	-arc 3,3,3,3,3 \
+	-c checkpoint \
+	--evaluate pretrained_h36m_detectron_coco.bin \
+	--render \
+	--viz-subject $THIS_VIDEO \
+	--viz-action custom \
+	--viz-camera 0 \
+	--viz-video /home/eric/Detectron/input/$THIS_VIDEO \
+	--viz-output ${OUTPUT_DIR}/${THIS_VIDEO%.*}_video_output.mp4 \
+	--viz-export ${OUTPUT_DIR}/${THIS_VIDEO%.*}_numpy_output.npy \
+	--viz-size 6
 done
 
 cd /home/eric/human-body-pose
 python3 main.py --height 185
+
+
+mv ${VIDEO_INPUT}/* /home/eric/human-body-pose/processed_videos
