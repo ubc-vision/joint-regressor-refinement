@@ -117,15 +117,19 @@ def process_video(file_name):
 		# change the actual positions of the head and feet to match the differences between the angle and the bottom of the feet
 		# and the face point and the top of the head. 
 		# maybe you only need to get the length of the leg. 
-
-		height = 0
-		leg_length = 0
+		
+		left_leg_length = (LA.norm(array[:, left_foot]-array[:, left_knee], axis = 1) + 
+				LA.norm(array[:, left_knee]-array[:, left_hip], axis = 1))
+		right_leg_length = (LA.norm(array[:, right_foot]-array[:, right_knee], axis = 1) + 
+				LA.norm(array[:, right_knee]-array[:, right_hip], axis = 1))
 
 		#average height of leg limbs
 		#maybe get the average across the entire set of data
-		height += (LA.norm(array[:, left_foot]-array[:, left_knee], axis = 1)+ LA.norm(array[:, right_foot]-array[:, right_knee], axis = 1))/2
-		height += (LA.norm(array[:, left_knee]-array[:, left_hip], axis = 1)+ LA.norm(array[:, right_knee]-array[:, right_hip], axis = 1))/2
-		leg_length = height
+		height = (left_leg_length + right_leg_length)/2
+
+		left_leg_length += LA.norm(array[:, left_hip] - array[:, pelvis], axis = 1)
+		right_leg_length += LA.norm(array[:, right_hip] - array[:, pelvis], axis = 1)
+
 		height += LA.norm(array[:, pelvis]-array[:, stomach], axis = 1)
 		height += LA.norm(array[:, stomach]-array[:, chest], axis = 1)
 		height += LA.norm(array[:, chest]-array[:, hair], axis = 1)
@@ -135,9 +139,10 @@ def process_video(file_name):
 		print(np.mean(height))
 
 		average_height = np.mean(height)
-		average_leg_length = np.mean(leg_length)
+		average_left_leg_length = np.mean(left_leg_length)
+		average_right_leg_length = np.mean(right_leg_length)
 
-		return average_height/height_multiplier, leg_length/height_multiplier
+		return average_height/height_multiplier, average_left_leg_length/height_multiplier, average_right_leg_length/height_multiplier
 
 	def move_ankles_to_feet(array):
 		moved_ankle_array = np.copy(array)
@@ -331,6 +336,28 @@ def process_video(file_name):
 				limb_length[frame, :] = limb_length[frame, :]/np.average(limb_length[frame, :])
 		return limb_length
 
+
+	def leg_lengths(array):
+		fig = plt.figure()
+		
+
+		left_leg_lengths = np.zeros(array.shape[0])
+		right_leg_lengths = np.zeros(array.shape[0])
+
+		for frame in range(array.shape[0]):
+			left_leg_lengths[frame] = (LA.norm(array[frame, left_foot]-array[frame, left_knee]) + 
+					LA.norm(array[frame, left_knee]-array[frame, left_hip]) + 
+					LA.norm(array[frame, left_hip]-array[frame, pelvis]))
+			right_leg_lengths[frame] = (LA.norm(array[frame, right_foot]-array[frame, right_knee]) + 
+					LA.norm(array[frame, right_knee]-array[frame, right_hip]) + 
+					LA.norm(array[frame, right_hip]-array[frame, pelvis]))
+
+		plt.plot(left_leg_lengths)
+		plt.plot(right_leg_lengths)
+		plt.savefig('video_output/{}_leg_lengths.png'.format(file_name[:-4]))
+		plt.close()
+		return left_leg_lengths, right_leg_lengths
+
 	def find_size_normalization(array, smoothed = False):
 		limb_lengths = return_limb_lengths(array)
 
@@ -362,7 +389,13 @@ def process_video(file_name):
 
 		strides = np.zeros(array.shape[0])
 
-		height, leg_length = persons_height(array)
+		height, left_leg_length, right_leg_length = persons_height(array)
+
+		average_leg_length = (left_leg_length + right_leg_length)/2
+
+
+		left_leg_lengths, right_leg_lengths = leg_lengths(array)
+
 		actual_height = args.args.height
 		conversion = actual_height / height
 
@@ -378,12 +411,14 @@ def process_video(file_name):
 		last_frame_changed = 0
 		for frame in range(1, len(bool_left_foot_forward)):
 
+
+
 			#if they are not the same
 			if (bool_left_foot_forward[frame] * bool_left_foot_forward[frame-1] < 0):
 
 				#scale the left foot pos by the average_leg_length. divide this by this_length, multiply by average_length
-				left_foot_pos = array[frame-1, left_foot]
-				right_foot_pos = array[frame-1, right_foot]
+				left_foot_pos = array[frame-1, pelvis] + (array[frame-1, left_foot]-array[frame-1, pelvis])/left_leg_lengths[frame-1]*average_leg_length
+				right_foot_pos = array[frame-1, pelvis] + (array[frame-1, right_foot]-array[frame-1, pelvis])/right_leg_lengths[frame-1]*average_leg_length
 
 				#subtract the foot change vectors because they are intially pointing in the same direction.
 				# it should actually get flipped over the forward vector
@@ -393,9 +428,11 @@ def process_video(file_name):
 					strides[prev_frame] = stride
 
 
-				last_frame_left_foot_pos = array[frame, left_foot]
-				last_frame_right_foot_pos = array[frame, right_foot]
+				last_frame_left_foot_pos = array[frame, pelvis] + (array[frame, left_foot]-array[frame, pelvis])/left_leg_lengths[frame]*average_leg_length
+				last_frame_right_foot_pos = array[frame, pelvis] + (array[frame, right_foot]-array[frame, pelvis])/right_leg_lengths[frame]*average_leg_length
 				last_frame_changed = frame
+
+
 
 		return strides
 
@@ -410,6 +447,10 @@ def process_video(file_name):
 	moved_ankle_array = move_ankles_to_feet(normalized_array)
 
 	left_foot_forward = find_which_leg_moving_forward(moved_ankle_array)
+
+	find_stride_length(moved_ankle_array)
+
+	
 
 	draw_animation(moved_ankle_array)
 
