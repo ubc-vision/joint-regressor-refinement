@@ -176,23 +176,24 @@ def vec2mat_for_trans_rot(vec):
 
 
 def vec2mat_for_similarity(vec):
-    assert vec.shape[1] == 4
+    assert vec.shape[1] == 5
     _len = vec.shape[0]
     O = torch.zeros([_len], dtype=torch.float32, device=vec.device)
     I = torch.ones([_len], dtype=torch.float32, device=vec.device)
 
-    p1, p2, p3, p4 = torch.unbind(vec, dim=1)
+    p1, p2, p3, p4, p5 = torch.unbind(vec, dim=1)
     theta = p1
     cos = torch.cos(theta)
     sin = torch.sin(theta)
-    s = 2.0 ** (p2)
-    dx = p3
-    dy = p4
+    sx = p2
+    sy = p3
+    dx = p4
+    dy = p5
     R = torch.stack([torch.stack([cos, -sin, O], dim=-1),
                      torch.stack([sin, cos, O], dim=-1),
                      torch.stack([O, O, I], dim=-1)], dim=1)
-    S = torch.stack([torch.stack([s, O, O], dim=-1),
-                     torch.stack([O, s, O], dim=-1),
+    S = torch.stack([torch.stack([sx, O, O], dim=-1),
+                     torch.stack([O, sy, O], dim=-1),
                      torch.stack([O, O, I], dim=-1)], dim=1)
     T = torch.stack([torch.stack([I, O, dx], dim=-1),
                      torch.stack([O, I, dy], dim=-1),
