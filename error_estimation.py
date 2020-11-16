@@ -13,6 +13,7 @@ from torchvision import datasets, transforms
 
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
+from matplotlib.patches import Arrow
 
 import sys
 sys.path.append('../VIBE')
@@ -45,7 +46,7 @@ class MPJPE_Model(nn.Module):
     def __init__(self):
         super(MPJPE_Model, self).__init__()
 
-        self.num_inputs = 7210
+        self.num_inputs = 7168
         self.num_joints = 14
 
 
@@ -55,8 +56,8 @@ class MPJPE_Model(nn.Module):
         for param in self.resnet.parameters():
             param.requires_grad = False
 
-        self.linearized_sampler = sampling_helper.DifferentiableImageSampler('bilinear', 'zeros')
         # self.linearized_sampler = sampling_helper.DifferentiableImageSampler('linearized', 'zeros')
+        self.linearized_sampler = sampling_helper.DifferentiableImageSampler('bilinear', 'zeros')
         self.crop_scalar = 8
         self.crop_size = [64, 64]
 
@@ -77,7 +78,6 @@ class MPJPE_Model(nn.Module):
         bboxes = input_dict['bboxes']
 
         self.input_images = []
-
 
         # for every joint, get the crop centred at the reprojected 2d location
 
@@ -105,12 +105,12 @@ class MPJPE_Model(nn.Module):
             y_mult = torch.where(dims_before[:, 0]==1080, 1080/1920*ones, ones)
             dy = dy*y_mult
 
-
+ 
             vec = torch.stack([zeros, ones/self.crop_scalar, ones/self.crop_scalar, self.crop_scalar*dx, self.crop_scalar*dy], dim=1)
 
             transformation_mat = perturbation_helper.vec2mat_for_similarity(vec)
 
-            linearized_transformed_image = self.linearized_sampler.warp_image(image, transformation_mat, out_shape=self.crop_size)
+            linearized_transformed_image = self.linearized_sampler.warp_image(image, transformation_mat, out_shape=self.crop_size).contiguous()
 
             self.input_images.append(linearized_transformed_image)
 
@@ -147,9 +147,8 @@ class MPJPE_Model(nn.Module):
 
             outputs.append(output)
 
-        outputs = torch.cat(outputs, dim=1)
-
-        outputs = torch.cat([outputs.view(outputs.shape[0], -1), joints3d.view(-1, 42)], dim = 1)       
+        outputs = torch.cat(outputs, dim=1)    
+        outputs = outputs.reshape(outputs.shape[0], -1)
 
         error_estimates = self.linear_operations(outputs)
 
@@ -176,7 +175,7 @@ def load_image(images, index):
 
 
 class data_set(Dataset):
-    def __init__(self, input_dict):
+    def __init__(self, input_dict, training=True):
         self.images = input_dict['images']
         self.estimated_j3d = input_dict['estimated_j3d']
         self.gt_j3d = input_dict['gt_j3d']
@@ -185,6 +184,7 @@ class data_set(Dataset):
         self.pred_cam = input_dict['pred_cam']
         self.bboxes = input_dict['bboxes']
         self.mpjpe = input_dict['mpjpe']
+        self.training = training
 
     
     def __getitem__(self, index):
@@ -193,15 +193,13 @@ class data_set(Dataset):
 
 
         # sometimes load noise around the ground truth. 
-        noise = random.random()
-
-        if(noise > .5):
-            estimated_j3d = self.estimated_j3d[index]
-
-            mpjpe = self.mpjpe[index]
-
-            cam = self.pred_cam[index]
+        if(self.training):
+            add_noise = random.random()
         else:
+            add_noise = 1
+
+        # only add the noide to gt if training
+        if(add_noise > .5 and self.training):
             # makes the noise applied proportional to noise found between estimates and gt
             estimated_j3d = (self.gt_j3d[index] + torch.randn(self.gt_j3d[index].shape)*.06)
             
@@ -209,9 +207,18 @@ class data_set(Dataset):
             mpjpe = torch.sqrt(((estimated_j3d - self.gt_j3d[index]) ** 2).sum(dim=-1))
 
             cam = self.gt_cam[index]
+            
+        else:
+
+            estimated_j3d = self.estimated_j3d[index]
+
+            mpjpe = self.mpjpe[index]
+
+            cam = self.pred_cam[index]
+            
 
 
-        output_dict = {'image': image, 'dims_before': dims_before, 'estimated_j3d': estimated_j3d, 'gt_j3d': self.gt_j3d[index], 'gt_j2d': self.gt_j2d[index], 'cam': cam, 'bboxes': self.bboxes[index], 'mpjpe': mpjpe}
+        output_dict = {'indices': index, 'image': image, 'dims_before': dims_before, 'estimated_j3d': estimated_j3d, 'gt_j3d': self.gt_j3d[index], 'gt_j2d': self.gt_j2d[index], 'cam': cam, 'bboxes': self.bboxes[index], 'mpjpe': mpjpe}
 
         # for item in output_dict:
         #     output_dict[item] = output_dict[item].to('cuda') 
@@ -361,16 +368,15 @@ def train_mpjpe_model():
     
     this_data_set = data_set(data_dict)
 
-    loader = torch.utils.data.DataLoader(this_data_set, batch_size = 128, num_workers=0, shuffle=False)
-    # loader = torch.utils.data.DataLoader(this_data_set, batch_size = batch_size, num_workers=16, shuffle=True)
-
-    iterator = iter(loader)
-
     loss_function = nn.MSELoss()
 
     for epoch in range(args.train_epochs):
 
         total_loss = 0
+
+        loader = torch.utils.data.DataLoader(this_data_set, batch_size = 64, num_workers=3, shuffle=True)
+
+        iterator = iter(loader)
 
         for iteration in tqdm(range(len(loader))):
 
@@ -394,62 +400,8 @@ def train_mpjpe_model():
     
     return model
 
-# def test_mpjpe_model(model):
-
-#     optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
-
-#     data_dict = load_data("validation")
-
-#     estimated_j3d = data_dict['estimated_j3d']
-
-#     optimizer = optim.Adam([estimated_j3d], lr=args.learning_rate)
-    
-#     this_data_set = data_set(data_dict)
-
-#     batch_size = 16
-
-#     # loader = torch.utils.data.DataLoader(this_data_set, batch_size = 128, num_workers=0, shuffle=True)
-#     loader = torch.utils.data.DataLoader(this_data_set, batch_size = batch_size, num_workers=16, shuffle=False, drop_last=False)
-
-#     iterator = iter(loader)
-
-#     loss_function = nn.MSELoss()
-
-#     total_loss = 0
-
-#     for iteration in range(len(loader)):
-
-#         batch = next(iterator)
-
-#         for item in batch:
-#             batch[item] = batch[item].to('cuda') 
-
-#         optimizer.zero_grad()
-#         estimated_error = model.forward(batch)
-
-#         estimated_loss = torch.mean(estimated_error)
-
-#         pose_differences = torch.mean(torch.norm(batch['estimated_j3d'] - this_batch_estimated_j3d))
-
-#         estimated_loss_total += estimated_loss.item()
-#         pose_differences_total += pose_differences.item()
-
-#         print("estimated_loss.item()")
-#         print(estimated_loss.item())
-#         print("pose_differences.item()")
-#         print(pose_differences.item())
-
-
-#         loss = pose_differences*1e-3 + estimated_loss
-
-
-
-#     print(f"epoch: {epoch}, loss: {total_loss}")
-    
-#     return model
-
 def test_mpjpe_model(model):
-
+    # model = MPJPE_Model(num_inputs, num_joints).to('cuda')
     model.eval()
 
     for param in model.parameters():
@@ -457,116 +409,64 @@ def test_mpjpe_model(model):
 
     data_dict = load_data("validation")
 
-    estimated_j3d = data_dict['estimated_j3d']
-    
     initial_j3d = data_dict['estimated_j3d'].clone()
-    cam = data_dict['pred_cam']
-    bboxes = data_dict['bboxes']
-    images = data_dict['images']
+    estimated_j3d = data_dict['estimated_j3d'].clone()
 
-    print("initial error")
-    evaluate(estimated_j3d, data_dict['gt_j3d'])
+    mse_loss = nn.MSELoss()
 
-    len_data = estimated_j3d.size()[0]
-
-    estimated_j3d.requires_grad = True
-
-    optimizer = optim.Adam([estimated_j3d], lr=args.optimization_rate)
-
-    loss_function = nn.MSELoss()
-
-    batch_size = 64
-
-    for epoch in range(100):
+    for epoch in range(args.train_epochs):
 
         estimated_loss_total = 0
         pose_differences_total = 0
 
-        permutation = torch.randperm(len_data)
+        data_dict['estimated_j3d'] = estimated_j3d
 
-        for batch in tqdm(range(0, len_data, batch_size)):
+        this_data_set = data_set(data_dict, training=False)
 
-            size = min(len_data-batch, batch_size)
-            indeces = permutation[batch:batch+size]
+        loader = torch.utils.data.DataLoader(this_data_set, batch_size = 64, num_workers=3, shuffle=False)
+        iterator = iter(loader)
 
-            this_batch_estimated_j3d = estimated_j3d[indeces].to('cuda')
-            this_batch_cam = cam[indeces].to('cuda')
-            this_batch_bboxes = bboxes[indeces].to('cuda')
+        for iteration in tqdm(range(len(loader))):
 
-            print("before")
-            evaluate(this_batch_estimated_j3d, data_dict['gt_j3d'][indeces].to('cuda'))
+            batch = next(iterator)
 
-            print(this_batch_estimated_j3d[0])
+            for item in batch:
+                batch[item] = batch[item].to('cuda') 
 
-            this_batch_images = []
-            this_batch_dims_before = []
+            this_batch_estimated_j3d = batch['estimated_j3d']
 
-            for index in indeces:
-                image, dims_before = load_image(images, index)
-                this_batch_images.append(image)
-                this_batch_dims_before.append(dims_before)
+            this_batch_estimated_j3d.requires_grad = True
 
-            this_batch_dims_before = torch.stack(this_batch_dims_before).to('cuda')
-            this_batch_images = torch.stack(this_batch_images).to('cuda')
+            optimizer = optim.Adam([this_batch_estimated_j3d], lr=args.optimization_rate)
 
-            input_dict = {'image': this_batch_images, 'dims_before': this_batch_dims_before, 'estimated_j3d': this_batch_estimated_j3d, 'cam': this_batch_cam, 'bboxes': this_batch_bboxes}
+            optimizer.zero_grad()
+            estimated_loss = model.forward(batch)
+            estimated_loss = torch.mean(estimated_loss)
+            
 
-            estimated_error = model.forward(input_dict)
+            # pose_differences = torch.MSE(torch.norm(initial_j3d[indeces].to('cuda') - this_batch_estimated_j3d))
+            pose_differences = mse_loss(initial_j3d[batch['indices']].to('cuda'), this_batch_estimated_j3d)
 
-            print("estimated_error before")
-            print(estimated_error[0])
-                
-            estimated_loss = torch.mean(estimated_error)
-
-            pose_differences = torch.mean(torch.norm(initial_j3d[indeces].to('cuda') - this_batch_estimated_j3d))
 
             estimated_loss_total += estimated_loss.item()
             pose_differences_total += pose_differences.item()
 
             loss = estimated_loss
-            # loss = pose_differences*1e-3 + estimated_loss
+            # loss = torch.mean(torch.zeros_like(this_batch_estimated_j3d) - this_batch_estimated_j3d)
+            # loss = torch.nn.MSELoss()(torch.zeros_like(this_batch_estimated_j3d), this_batch_estimated_j3d)
+            loss = pose_differences*1e-1 + estimated_loss
 
             loss.backward()
-
-            print("this_batch_estimated_j3d.requires_grad")
-            print(this_batch_estimated_j3d.requires_grad)
-
-            print("this_batch_estimated_j3d.grad")
-            print(this_batch_estimated_j3d.grad)
-            print("model.linear_operations[0].weight.grad")
-            print(model.linear_operations[0].weight.grad)
-            print("model.linear_operations[2].weight.grad")
-            print(model.linear_operations[2].weight.grad)
-
-            print("model.resnet[0].weight.grad")
-            print(model.resnet[0].weight.grad)
-            print("model.resnet[1].weight.grad")
-            print(model.resnet[1].weight.grad)
-            print("model.input_images[1].grad")
-            print(model.input_images[1].grad)
-            print("model.input_images[0].grad")
-            print(model.input_images[0].grad)
-            print("this_batch_images.grad")
-            print(this_batch_images.grad)
             
             optimizer.step()
-            
 
-            optimizer.zero_grad()
-
-            exit()
-
-
-            input_dict = None
-
-            
+            estimated_j3d[batch['indices']] = this_batch_estimated_j3d.cpu().detach()
 
         evaluate(estimated_j3d, data_dict['gt_j3d'])
 
         print(f"epoch: {epoch}, estimated_loss_total: {estimated_loss_total}, pose_differences_total: {pose_differences_total}")
-
-
-        
+    
+    return model
 
 # borrowed from https://github.com/gulvarol/smplpytorch
 def th_posemap_axisang(pose_vectors):
@@ -776,37 +676,186 @@ def load_data(set):
 
 
 
-if __name__ == "__main__":
+# this is going to need a dataloader
+# but dont modify the points
+def draw_gradients(model):
+    model.eval()
 
-    # to get the time aspect, load all in an array 
-    # get the ground truth to be the new frame. 
-    # play around with a different number of frames and such. 
-    # 
+    for param in model.parameters():
+        param.requires_grad = False
+
+
+    # 'images':images, 'estimated_j3d':estimated_j3d, 'gt_j3d':gt_j3d, 'gt_j2d':gt_j2d, 'gt_cam':gt_cam, 'pred_cam':pred_cam, 'bboxes':bboxes, 'mpjpe':mpjpe
+    data_dict = load_data("validation")
+    data_dict['estimated_j3d'] = data_dict['gt_j3d']
+    data_dict['pred_cam'] = data_dict['gt_cam']
+    # change the data dict so it only gets the first image many times over
+    this_data_set = data_set(data_dict, training=False)
+    loader = torch.utils.data.DataLoader(this_data_set, batch_size = 1, num_workers=0, shuffle=True)
+    iterator = iter(loader)
+    batch = next(iterator)
+
+
+    images = torch.cat([batch['image']]*121, dim=0)
+    estimated_j3d = torch.cat([batch['estimated_j3d']]*121, dim=0)
+    dims_before = torch.cat([batch['dims_before']]*121, dim=0)
+    gt_cam = torch.cat([batch['cam']]*121, dim=0)
+    bboxes = torch.cat([batch['bboxes']]*121, dim=0)
+
+    for x in range(11):
+        for y in range(11):
+            estimated_j3d[x*11+y, :, 0] += (x/5-1)*.1
+            estimated_j3d[x*11+y, :, 1] -= (y/5-1)*.1
+
+    locations = []
+    directions = []
+
+    batch_size = 32
+    for i in range(0, images.shape[0], batch_size):
+
+        size = min(images.shape[0]-i, batch_size)
+
+        batch = {   'image': images[i:i+size],
+                    'dims_before': dims_before[i:i+size],
+                    'estimated_j3d': estimated_j3d[i:i+size],
+                    'cam': gt_cam[i:i+size],
+                    'bboxes': bboxes[i:i+size]}
+
+        for item in batch:
+            batch[item] = batch[item].to('cuda') 
+
+        initial_j3d = batch['estimated_j3d'].clone()
+
+        batch['estimated_j3d'].requires_grad = True
+
+        optimizer = optim.Adam([batch['estimated_j3d']], lr=1)
+
+        # joints_3d[:, :, 0] += .1
+
+        estimated_loss = model.forward(batch)
+
+        estimated_loss.mean().backward()
+        optimizer.step()
+
+        joints2d_before = projection(initial_j3d, batch['cam'])
+        joints2d = projection(batch['estimated_j3d'], batch['cam'])
+
+        direction = joints2d-joints2d_before
+
+        des_bboxes = batch['bboxes'].unsqueeze(1).expand(-1, joints2d_before.shape[1], -1)
+
+        joints2d_before[:, :, 0] *= des_bboxes[:, :, 2]/2*1.1
+        joints2d_before[:, :, 0] += des_bboxes[:, :, 0]
+        joints2d_before[:, :, 1] *= des_bboxes[:, :, 3]/2*1.1
+        joints2d_before[:, :, 1] += des_bboxes[:, :, 1]
+
+
+        locations.append(joints2d_before)
+        directions.append(direction)
+
+
+    crop_scalar = 8
+    crop_size = [64, 64]
+
+    locations = torch.cat(locations, dim=0)
+    normalized_locations = locations-locations[60]
+    normalized_locations*=(64/120)
+    normalized_locations += 32
+    directions = torch.cat(directions, dim=0)
+
+
+    blt = utils.torch_img_to_np_img(images)
+
+    if(dims_before[0, 0]==1920):
+        offset = [420, 0]
+    else:
+        offset = [0, 420]
+
+    plt.imshow(blt[0])
+    ax = plt.gca()
+    for j in range(locations.shape[1]):
+
+        initial_x = locations[60, j, 0]+offset[0]
+        initial_y = locations[60, j, 1]+offset[1]
+    
+        circ = Circle((initial_x,initial_y),10, color = 'r')
+
+        ax.add_patch(circ)
+    plt.savefig(f"out_folder/bilinear_8/overall")
+    plt.close()
+
+    for j in range(locations.shape[1]):
+
+        dx = locations[60, j, 0]/(dims_before[0, 1]/2)-1
+        if(dims_before[0, 0]==1920):
+            dx *= 1080/1920
+        
+
+        dy = locations[60, j, 1]/(dims_before[0, 0]/2)-1
+        if(dims_before[0, 0]==1080):
+            dy *= 1080/1920
+
+        vec = torch.Tensor([[0, 1/crop_scalar, 1/crop_scalar, crop_scalar*dx, crop_scalar*dy]])
+
+        transformation_mat = perturbation_helper.vec2mat_for_similarity(vec)
+
+        linearized_sampler = sampling_helper.DifferentiableImageSampler('bilinear', 'zeros')
+
+        linearized_transformed_image = linearized_sampler.warp_image(images[0], transformation_mat, out_shape=crop_size)
+
+        plt.imshow(utils.torch_img_to_np_img(linearized_transformed_image)[0])
+        ax = plt.gca()
+        for k in range(normalized_locations.shape[0]):
+
+            initial_x = normalized_locations[k, j, 0]
+            initial_y = normalized_locations[k, j, 1]
+
+            dir_x = directions[k, j, 0]
+            dir_y = directions[k, j, 1]
+
+            if(k == 60):
+                color = 'b'
+            else:
+                color = 'r'
+
+            circ = Arrow(initial_x.cpu().detach().numpy(), initial_y.cpu().detach().numpy(), 
+                                    dir_x.cpu().detach().numpy(), dir_y.cpu().detach().numpy(),
+                                    width=1, color = color)
+
+            ax.add_patch(circ)
+        plt.savefig(f"out_folder/bilinear_8/joint_{j}")
+        plt.close()
+
+    
+    return 0
+
+if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
 
     device = torch.device("cuda")
 
 
-    parser.add_argument('--train_epochs', type=int, default=1)
-    parser.add_argument('--opt_epochs', type=int, default=101)
+    parser.add_argument('--train_epochs', type=int, default=5)
+    parser.add_argument('--opt_epochs', type=int, default=5)
     parser.add_argument('--learning_rate', type=float, default=1e-6)
-    parser.add_argument('--optimization_rate', type=float, default=1e0)
+    parser.add_argument('--optimization_rate', type=float, default=1e-3)
     args = parser.parse_args()
+
+    
 
     print("args")
     print(args)
 
-    model = train_mpjpe_model()
-    # torch.save(model.state_dict(), "models/error_estimator.pt")
+    # model = train_mpjpe_model()
+    # torch.save(model.state_dict(), "models/bilinear_model_8.pt")
+    # exit()
+    # model = MPJPE_Model().to('cuda')
+    # model.load_state_dict(torch.load("models/linearized_model.pt"))
     model = MPJPE_Model().to('cuda')
-    model.load_state_dict(torch.load("models/error_estimator.pt"))
+    model.load_state_dict(torch.load("models/bilinear_model_8.pt"))
 
-    test_mpjpe_model(model)
+    draw_gradients(model)
 
-
-
-    # for i in range(9):
-    #     model = train_model(model)
-    #     test_model(model)
+    # test_mpjpe_model(model)
 
