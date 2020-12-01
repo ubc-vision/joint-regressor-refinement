@@ -16,13 +16,13 @@ from matplotlib.patches import Circle
 from matplotlib.patches import Arrow
 
 import sys
-sys.path.append('../VIBE')
-from lib.models.smpl import SMPL, SMPL_MODEL_DIR, H36M_TO_J14
-from lib.utils.eval_utils import batch_compute_similarity_transform_torch
 
-sys.path.append('/home/willow/Documents/smplpytorch')
-from smplpytorch.pytorch.smpl_layer import SMPL_Layer
-from display_utils import display_model
+import os
+
+
+# from lib.models.smpl import SMPL, SMPL_MODEL_DIR, H36M_TO_J14
+from smpl import SMPL, SMPL_MODEL_DIR, H36M_TO_J14
+from eval_utils import batch_compute_similarity_transform_torch
 
 # from spacepy import pycdf
 import numpy as np
@@ -46,9 +46,10 @@ class MPJPE_Model(nn.Module):
     def __init__(self):
         super(MPJPE_Model, self).__init__()
 
-        self.num_inputs = 7168
+        self.num_inputs = 512
         self.num_joints = 14
 
+        os.environ['TORCH_HOME'] = 'models\\resnet_pretrained'
 
         resnet = models.resnet18(pretrained=True)
         self.resnet = torch.nn.Sequential(*list(resnet.children())[:-1])
@@ -56,19 +57,25 @@ class MPJPE_Model(nn.Module):
         for param in self.resnet.parameters():
             param.requires_grad = False
 
-        # self.linearized_sampler = sampling_helper.DifferentiableImageSampler('linearized', 'zeros')
-        self.linearized_sampler = sampling_helper.DifferentiableImageSampler('bilinear', 'zeros')
-        self.crop_scalar = 8
+        self.linearized_sampler = sampling_helper.DifferentiableImageSampler('linearized', 'zeros')
+        self.crop_scalar = 16
         self.crop_size = [64, 64]
 
-        self.linear_operations = nn.Sequential(
-            nn.Linear(self.num_inputs, 128),
-            nn.ReLU(),
-            nn.Linear(128, self.num_joints),
-            nn.ReLU(),
-        )
+        self.linear_operations = []
 
-    def forward(self, input_dict):
+        for i in range(14):
+
+            linear_operation = nn.Sequential(
+                nn.Linear(self.num_inputs, 128),
+                nn.ReLU(),
+                nn.Linear(128, 10),
+                nn.ReLU(),
+            ).to(device)
+            
+            self.linear_operations.append(linear_operation)
+
+
+    def forward(self, input_dict):  
 
         image = input_dict['image']
         dims_before = input_dict['dims_before']
@@ -90,13 +97,12 @@ class MPJPE_Model(nn.Module):
         joints2d[:, :, 1] *= bboxes[:, :, 3]/2*1.1
         joints2d[:, :, 1] += bboxes[:, :, 1]
 
-        zeros = torch.zeros(image.shape[0]).to('cuda')
-        ones = torch.ones(image.shape[0]).to('cuda')
+        zeros = torch.zeros(image.shape[0]).to(device)
+        ones = torch.ones(image.shape[0]).to(device)
 
-        outputs = []
+        error_estimates = []
 
         for i in range(14):
-
             dx = joints2d[:, i, 0]/(dims_before[:, 1]/2)-1
             x_mult = torch.where(dims_before[:, 0]==1920, 1080/1920*ones, ones)
             dx = dx*x_mult
@@ -105,7 +111,7 @@ class MPJPE_Model(nn.Module):
             y_mult = torch.where(dims_before[:, 0]==1080, 1080/1920*ones, ones)
             dy = dy*y_mult
 
- 
+
             vec = torch.stack([zeros, ones/self.crop_scalar, ones/self.crop_scalar, self.crop_scalar*dx, self.crop_scalar*dy], dim=1)
 
             transformation_mat = perturbation_helper.vec2mat_for_similarity(vec)
@@ -114,50 +120,52 @@ class MPJPE_Model(nn.Module):
 
             self.input_images.append(linearized_transformed_image)
 
-            output = self.resnet(linearized_transformed_image)
+            output = self.resnet(linearized_transformed_image).reshape(-1, self.num_inputs)
 
-            # if(i == 6):
-            #     blt = utils.torch_img_to_np_img(image)
+            error_estimate = self.linear_operations[i](output)
 
-            #     blt_crop = utils.torch_img_to_np_img(linearized_transformed_image)
+            error_estimate = torch.norm(error_estimate, dim=-1)
 
+            error_estimates.append(error_estimate)
 
-            #     for j in range(image.shape[0]):
-
-            #         if(dims_before[j, 0]==1920):
-            #             offset = [420, 0]
-            #         else:
-            #             offset = [0, 420]
-                    
-            #         plt.imshow(blt[j])
-            #         ax = plt.gca()
-            #         for k in range(joints2d.shape[1]):
-            #             circ = Circle((gt_j2d[j, k, 0]+offset[0],gt_j2d[j, k, 1]+offset[1]),10, color = 'b')
-            #             ax.add_patch(circ)
-            #         for k in range(joints2d.shape[1]):
-            #             circ = Circle((joints2d[j, k, 0]+offset[0],joints2d[j, k, 1]+offset[1]),10, color = 'r')
-            #             ax.add_patch(circ)
-            #         plt.savefig(f"{j:03d}_figure")
-            #         plt.close()
-                    
-            #         plt.imshow(blt_crop[j])
-            #         plt.savefig(f"{j:03d}_crop")
-            #         plt.close()
-            #     exit()
-
-            outputs.append(output)
-
-        outputs = torch.cat(outputs, dim=1)    
-        outputs = outputs.reshape(outputs.shape[0], -1)
-
-        error_estimates = self.linear_operations(outputs)
+        error_estimates = torch.stack(error_estimates, dim=-1)
 
         return error_estimates
+
+        # if(i == 6):
+        #     blt = utils.torch_img_to_np_img(image)
+
+        #     blt_crop = utils.torch_img_to_np_img(linearized_transformed_image)
+
+
+        #     for j in range(image.shape[0]):
+
+        #         if(dims_before[j, 0]==1920):
+        #             offset = [420, 0]
+        #         else:
+        #             offset = [0, 420]
+                
+        #         plt.imshow(blt[j])
+        #         ax = plt.gca()
+        #         for k in range(joints2d.shape[1]):
+        #             circ = Circle((gt_j2d[j, k, 0]+offset[0],gt_j2d[j, k, 1]+offset[1]),10, color = 'b')
+        #             ax.add_patch(circ)
+        #         for k in range(joints2d.shape[1]):
+        #             circ = Circle((joints2d[j, k, 0]+offset[0],joints2d[j, k, 1]+offset[1]),10, color = 'r')
+        #             ax.add_patch(circ)
+        #         plt.savefig(f"{j:03d}_figure")
+        #         plt.close()
+                
+        #         plt.imshow(blt_crop[j])
+        #         plt.savefig(f"{j:03d}_crop")
+        #         plt.close()
+        #     exit()
+
 
 
 def load_image(images, index):
 
-    image = imageio.imread(f"../VIBE/{images[index]}")/255.0
+    image = imageio.imread(f"{images[index]}")/255.0
     image = utils.np_img_to_torch_img(image).float()
 
     dims_before = torch.Tensor([image.shape[1], image.shape[2]])
@@ -221,7 +229,7 @@ class data_set(Dataset):
         output_dict = {'indices': index, 'image': image, 'dims_before': dims_before, 'estimated_j3d': estimated_j3d, 'gt_j3d': self.gt_j3d[index], 'gt_j2d': self.gt_j2d[index], 'cam': cam, 'bboxes': self.bboxes[index], 'mpjpe': mpjpe}
 
         # for item in output_dict:
-        #     output_dict[item] = output_dict[item].to('cuda') 
+        #     output_dict[item] = output_dict[item].to(device) 
 
         return output_dict
     
@@ -263,9 +271,9 @@ def evaluate(pred_j3ds, target_j3ds):
 
 def optimize_camera_parameters(joints3d, joints2d, bboxes):
 
-    joints3d = joints3d.to('cuda')
-    joints2d = joints2d.to('cuda')
-    bboxes = bboxes.to('cuda')
+    joints3d = joints3d.to(device)
+    joints2d = joints2d.to(device)
+    bboxes = bboxes.to(device)
 
     pred_cam = torch.zeros((joints3d.shape[0], 3))
 
@@ -291,7 +299,7 @@ def optimize_camera_parameters(joints3d, joints2d, bboxes):
         joints2d_estimated[:, :, 1] *= bboxes[:, :, 3]/2*1.1
         joints2d_estimated[:, :, 1] += bboxes[:, :, 1]
 
-        zeros  = torch.zeros(joints2d_estimated[:, :, 0].shape).to('cuda')
+        zeros  = torch.zeros(joints2d_estimated[:, :, 0].shape).to(device)
 
 
         joints2d_estimated[:, :, 0] = torch.where(joints2d[:, :, 0]==0, zeros, joints2d_estimated[:, :, 0])
@@ -353,37 +361,57 @@ def perspective_projection(points, rotation, translation,
 
     return projected_points[:, :, :-1]
 
+def plot_learning_curve(errors, val_errors):
+    plt.plot(errors)
+    plt.plot(range(0, len(val_errors)*10, 10), val_errors)
+    plt.savefig("learning_curve")
+    plt.close()
+
+
 
 
 # def train_mpjpe_model(num_inputs, num_joints):
 def train_mpjpe_model():
 
-    # model = MPJPE_Model(num_inputs, num_joints).to('cuda')
-    model = MPJPE_Model().to('cuda')
+    model = MPJPE_Model().to(device)
     model.train()
+    # model = MPJPE_Model().to(device)
+    # model.load_state_dict(torch.load("models/linearized_model_16.pt"))
 
     optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
 
     data_dict = load_data("train")
+
+    val_data_dict = load_data("validation")
     
     this_data_set = data_set(data_dict)
 
+    val_data_set = data_set(val_data_dict)
+
     loss_function = nn.MSELoss()
+
+    losses = []
+
+    val_losses = []
 
     for epoch in range(args.train_epochs):
 
         total_loss = 0
 
-        loader = torch.utils.data.DataLoader(this_data_set, batch_size = 64, num_workers=3, shuffle=True)
+        loader = torch.utils.data.DataLoader(this_data_set, batch_size = 32, num_workers=5, shuffle=True)
+
+        val_loader = torch.utils.data.DataLoader(val_data_set, batch_size = 32, num_workers=0, shuffle=True)
 
         iterator = iter(loader)
+
+        val_iterator = iter(val_loader)
 
         for iteration in tqdm(range(len(loader))):
 
             batch = next(iterator)
 
             for item in batch:
-                batch[item] = batch[item].to('cuda') 
+                batch[item] = batch[item].to(device) 
 
             optimizer.zero_grad()
             estimated_loss = model.forward(batch)
@@ -392,16 +420,36 @@ def train_mpjpe_model():
 
             total_loss += loss.item()
 
+            losses.append(loss.item())
+
             loss.backward()
 
             optimizer.step()
 
+            if(iteration%10==0):
+                batch = next(val_iterator)
+
+                for item in batch:
+                    batch[item] = batch[item].to(device) 
+
+                estimated_loss = model.forward(batch)
+
+                loss = loss_function(estimated_loss, batch['mpjpe'])
+
+                val_losses.append(loss.item())
+
+
         print(f"epoch: {epoch}, loss: {total_loss}")
+
+        draw_gradients(model, f'epoch_{epoch}')
+
+        plot_learning_curve(losses, val_losses)
+    
     
     return model
 
 def test_mpjpe_model(model):
-    # model = MPJPE_Model(num_inputs, num_joints).to('cuda')
+    # model = MPJPE_Model(num_inputs, num_joints).to(device)
     model.eval()
 
     for param in model.parameters():
@@ -423,7 +471,7 @@ def test_mpjpe_model(model):
 
         this_data_set = data_set(data_dict, training=False)
 
-        loader = torch.utils.data.DataLoader(this_data_set, batch_size = 64, num_workers=3, shuffle=False)
+        loader = torch.utils.data.DataLoader(this_data_set, batch_size = 16, num_workers=5, shuffle=False)
         iterator = iter(loader)
 
         for iteration in tqdm(range(len(loader))):
@@ -431,7 +479,7 @@ def test_mpjpe_model(model):
             batch = next(iterator)
 
             for item in batch:
-                batch[item] = batch[item].to('cuda') 
+                batch[item] = batch[item].to(device) 
 
             this_batch_estimated_j3d = batch['estimated_j3d']
 
@@ -444,8 +492,8 @@ def test_mpjpe_model(model):
             estimated_loss = torch.mean(estimated_loss)
             
 
-            # pose_differences = torch.MSE(torch.norm(initial_j3d[indeces].to('cuda') - this_batch_estimated_j3d))
-            pose_differences = mse_loss(initial_j3d[batch['indices']].to('cuda'), this_batch_estimated_j3d)
+            # pose_differences = torch.MSE(torch.norm(initial_j3d[indeces].to(device) - this_batch_estimated_j3d))
+            pose_differences = mse_loss(initial_j3d[batch['indices']].to(device), this_batch_estimated_j3d)
 
 
             estimated_loss_total += estimated_loss.item()
@@ -562,7 +610,7 @@ def return_joints_gt(smpl_input, smpl, J_regressor):
 def find_gt_joints(pose, shape, smpl, J_regressor):
 
     th_pose_rotmat = th_posemap_axisang(pose).view(-1, 24, 3, 3)
-    
+
     pred_vertices = smpl(global_orient=th_pose_rotmat[:, 0].unsqueeze(1), body_pose=th_pose_rotmat[:, 1:], betas=shape, pose2rot=False).vertices
     J_regressor_batch = J_regressor[None, :].expand(pred_vertices.shape[0], -1, -1).to(pred_vertices.device)
     pred_joints = torch.matmul(J_regressor_batch, pred_vertices)
@@ -586,17 +634,17 @@ def move_gt_pelvis(gt_j3ds, j3ds):
 
 def load_data(set):
 
-    files = glob.glob(f"../VIBE/data/3dpw/predicted_poses/{set}/*/vibe_output.pkl")
+    files = glob.glob(f"data/3dpw/predicted_poses/{set}/*/vibe_output.pkl")
 
     if(set == "train"):
 
-        J_regressor = torch.from_numpy(np.load('../VIBE/data/vibe_data/J_regressor_h36m.npy')).float().to('cuda')
+        J_regressor = torch.from_numpy(np.load('data/vibe_data/J_regressor_h36m.npy')).float().to(device)
             
         smpl = SMPL(
-            '../VIBE/{}'.format(SMPL_MODEL_DIR),
+            '{}'.format(SMPL_MODEL_DIR),
             batch_size=64,
             create_transl=False
-        ).to('cuda')
+        ).to(device)
 
 
     images = []
@@ -625,7 +673,7 @@ def load_data(set):
             if(set == "train"):
                 pose = torch.Tensor(data[person]['gt_pose'])
                 shape = torch.Tensor(data[person]['gt_shape'])
-                gt_j3ds = find_gt_joints(pose.to('cuda'), shape.to('cuda'), smpl, J_regressor).cpu()
+                gt_j3ds = find_gt_joints(pose.to(device), shape.to(device), smpl, J_regressor).cpu()
 
                 gt_j3ds = move_gt_pelvis(gt_j3ds, j3ds)
 
@@ -676,9 +724,7 @@ def load_data(set):
 
 
 
-# this is going to need a dataloader
-# but dont modify the points
-def draw_gradients(model):
+def draw_gradients(model, name):
     model.eval()
 
     for param in model.parameters():
@@ -710,7 +756,7 @@ def draw_gradients(model):
     locations = []
     directions = []
 
-    batch_size = 32
+    batch_size = 16
     for i in range(0, images.shape[0], batch_size):
 
         size = min(images.shape[0]-i, batch_size)
@@ -722,13 +768,13 @@ def draw_gradients(model):
                     'bboxes': bboxes[i:i+size]}
 
         for item in batch:
-            batch[item] = batch[item].to('cuda') 
+            batch[item] = batch[item].to(device) 
 
         initial_j3d = batch['estimated_j3d'].clone()
 
         batch['estimated_j3d'].requires_grad = True
 
-        optimizer = optim.Adam([batch['estimated_j3d']], lr=1)
+        optimizer = optim.Adam([batch['estimated_j3d']], lr=args.learning_rate)
 
         # joints_3d[:, :, 0] += .1
 
@@ -754,7 +800,7 @@ def draw_gradients(model):
         directions.append(direction)
 
 
-    crop_scalar = 8
+    crop_scalar = 32
     crop_size = [64, 64]
 
     locations = torch.cat(locations, dim=0)
@@ -781,7 +827,7 @@ def draw_gradients(model):
         circ = Circle((initial_x,initial_y),10, color = 'r')
 
         ax.add_patch(circ)
-    plt.savefig(f"out_folder/bilinear_8/overall")
+    plt.savefig(f"out_folder/linearized_16/{name}_overall")
     plt.close()
 
     for j in range(locations.shape[1]):
@@ -799,7 +845,7 @@ def draw_gradients(model):
 
         transformation_mat = perturbation_helper.vec2mat_for_similarity(vec)
 
-        linearized_sampler = sampling_helper.DifferentiableImageSampler('bilinear', 'zeros')
+        linearized_sampler = sampling_helper.DifferentiableImageSampler('linearized', 'zeros')
 
         linearized_transformed_image = linearized_sampler.warp_image(images[0], transformation_mat, out_shape=crop_size)
 
@@ -807,24 +853,41 @@ def draw_gradients(model):
         ax = plt.gca()
         for k in range(normalized_locations.shape[0]):
 
-            initial_x = normalized_locations[k, j, 0]
-            initial_y = normalized_locations[k, j, 1]
+            initial_loc = normalized_locations[k, j, :2].cpu().detach()
 
-            dir_x = directions[k, j, 0]
-            dir_y = directions[k, j, 1]
+            direction = directions[k, j, :2].cpu().detach()
+
+            gt_dir = normalized_locations[k, j, :2].cpu().detach()-normalized_locations[60, j, :2].cpu().detach()
+
+
+            direction = direction/torch.norm(direction)
+            gt_dir = gt_dir/torch.norm(gt_dir)
+
+            # normalize both directions and get the dot product. 1 means green, -1 means red
+
+            # see how much thy point toward the centre
 
             if(k == 60):
                 color = 'b'
             else:
-                color = 'r'
+                dir_dot = torch.dot(gt_dir, direction).numpy()
+                dir_scalar = (dir_dot+1)/2
+                color = (dir_scalar, 1-dir_scalar, 0)
 
-            circ = Arrow(initial_x.cpu().detach().numpy(), initial_y.cpu().detach().numpy(), 
-                                    dir_x.cpu().detach().numpy(), dir_y.cpu().detach().numpy(),
+                color = np.clip(color, 0, 1)
+
+            circ = Arrow(initial_loc[0].numpy(), initial_loc[1].numpy(), 
+                                    direction[0].numpy()*2, direction[1].numpy()*2,
                                     width=1, color = color)
 
             ax.add_patch(circ)
-        plt.savefig(f"out_folder/bilinear_8/joint_{j}")
+        plt.savefig(f"out_folder/linearized_16/{name}_joint_{j}")
         plt.close()
+
+    model.train()
+
+    for param in model.parameters():
+        param.requires_grad = True
 
     
     return 0
@@ -833,29 +896,29 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
 
-    device = torch.device("cuda")
 
-
-    parser.add_argument('--train_epochs', type=int, default=5)
+    parser.add_argument('--train_epochs', type=int, default=10)
     parser.add_argument('--opt_epochs', type=int, default=5)
-    parser.add_argument('--learning_rate', type=float, default=1e-6)
+    parser.add_argument('--learning_rate', type=float, default=1e-5)
     parser.add_argument('--optimization_rate', type=float, default=1e-3)
     args = parser.parse_args()
+
+    device = torch.device("cuda:0")
 
     
 
     print("args")
     print(args)
 
-    # model = train_mpjpe_model()
-    # torch.save(model.state_dict(), "models/bilinear_model_8.pt")
+    model = train_mpjpe_model()
+    torch.save(model.state_dict(), "models/linearized_model_16.pt")
     # exit()
-    # model = MPJPE_Model().to('cuda')
-    # model.load_state_dict(torch.load("models/linearized_model.pt"))
-    model = MPJPE_Model().to('cuda')
-    model.load_state_dict(torch.load("models/bilinear_model_8.pt"))
+    # model = MPJPE_Model().to(device)
+    # model.load_state_dict(torch.load("models/linearized_model_16.pt"))
 
-    draw_gradients(model)
+    test_mpjpe_model(model)
 
-    # test_mpjpe_model(model)
+
+
+
 
