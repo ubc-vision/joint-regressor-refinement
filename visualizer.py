@@ -28,7 +28,7 @@ def draw_gradients(model, set, name):
     data_dict['pred_cam'] = data_dict['gt_cam']
     # change the data dict so it only gets the first image many times over
     this_data_set = data_set(data_dict, training=False)
-    loader = torch.utils.data.DataLoader(this_data_set, batch_size = 1, num_workers=0, shuffle=True)
+    loader = torch.utils.data.DataLoader(this_data_set, batch_size = 1, num_workers=0, shuffle=False)
     iterator = iter(loader)
     batch = next(iterator)
 
@@ -74,7 +74,8 @@ def draw_gradients(model, set, name):
             gt_gradient[this_index] = 2*(estimated_j3d[this_index]-batch['gt_j3d'])
 
     locations = []
-    directions = []
+    grads = []
+    gt_grads = []
     estimated_error = []
 
     batch_size = args.optimization_batch_size
@@ -107,7 +108,8 @@ def draw_gradients(model, set, name):
 
         joints2d = projection(initial_j3d, batch['cam'])
 
-        direction = batch['estimated_j3d'].grad
+        direction = batch['estimated_j3d'].grad[:, :, :2]
+        gt_grad = batch['gt_gradient'][:, :, :2]
 
         des_bboxes = batch['bboxes'].unsqueeze(1).expand(-1, joints2d.shape[1], -1)
 
@@ -117,7 +119,8 @@ def draw_gradients(model, set, name):
         joints2d[:, :, 1] += des_bboxes[:, :, 1]
 
         locations.append(joints2d.cpu().detach())
-        directions.append(direction.cpu().detach())
+        grads.append(direction.cpu().detach())
+        gt_grads.append(gt_grad.cpu().detach())
 
         estimated_error.append(estimated_loss.cpu().detach())
 
@@ -129,7 +132,10 @@ def draw_gradients(model, set, name):
     normalized_locations = locations-locations[60]
     normalized_locations*=(64/(1920/crop_scalar))
     normalized_locations += 32
-    directions = torch.cat(directions, dim=0)
+    grads = torch.cat(grads, dim=0)
+    gt_grads = torch.cat(gt_grads, dim=0)
+
+    gt_dir = locations-locations[60]
 
     this_error = torch.max(mpjpe)
 
@@ -172,6 +178,12 @@ def draw_gradients(model, set, name):
     gradients = []
     gt_gradients = []
 
+    # initial_loc = projection(normalized_locations, gt_cam)
+
+    # gradient = projection(grads, gt_cam)
+
+    # gt_dir = initial_loc-projection(normalized_locations[60][None], gt_cam[60][None])
+
     for j in range(locations.shape[1]):
 
         dx = locations[60, j, 0]/(dims_before[0, 1]/2)-1
@@ -187,30 +199,28 @@ def draw_gradients(model, set, name):
 
         transformation_mat = perturbation_helper.vec2mat_for_similarity(vec)
 
-        linearized_sampler = sampling_helper.DifferentiableImageSampler('linearized', 'zeros')
+        bilinear_sampler = sampling_helper.DifferentiableImageSampler('bilinear', 'zeros')
 
-        linearized_transformed_image = linearized_sampler.warp_image(images[0], transformation_mat, out_shape=crop_size)
+        bilinear_transformed_image = bilinear_sampler.warp_image(images[0], transformation_mat, out_shape=crop_size)
 
 
-        plt.imshow(utils.torch_img_to_np_img(linearized_transformed_image)[0])
+        plt.imshow(utils.torch_img_to_np_img(bilinear_transformed_image)[0])
         crops.append(wandb.Image(plt))
         plt.close()
 
         # draw error curve
-        plt.imshow(utils.torch_img_to_np_img(linearized_transformed_image)[0])
+        plt.imshow(utils.torch_img_to_np_img(bilinear_transformed_image)[0])
         ax = plt.gca()
         for k in range(normalized_locations.shape[0]):
 
 
             error = estimated_error[k, j]
-
-            initial_loc = normalized_locations[k, j, :2]
-
+        
             # ranging from green for small error and red for high error
             color = (error, 1-error, 0)
             color = np.clip(color, 0, 1)
 
-            circ = Circle((initial_loc[0],initial_loc[1]),1, color = color)
+            circ = Circle((normalized_locations[k, j, 0],normalized_locations[k, j, 1]),1, color = color)
 
             ax.add_patch(circ)
 
@@ -218,20 +228,17 @@ def draw_gradients(model, set, name):
         
         plt.close()
 
-        plt.imshow(utils.torch_img_to_np_img(linearized_transformed_image)[0])
+        plt.imshow(utils.torch_img_to_np_img(bilinear_transformed_image)[0])
         ax = plt.gca()
         for k in range(normalized_locations.shape[0]):
 
-
             error = mpjpe[k, j]
-
-            initial_loc = normalized_locations[k, j, :2]
 
             # ranging from green for small error and red for high error
             color = (error, 1-error, 0)
             color = np.clip(color, 0, 1)
 
-            circ = Circle((initial_loc[0],initial_loc[1]),1, color = color)
+            circ = Circle((normalized_locations[k, j, 0],normalized_locations[k, j, 1]),1, color = color)
 
             ax.add_patch(circ)
 
@@ -239,27 +246,21 @@ def draw_gradients(model, set, name):
         plt.close()
         
         # draw gradients
-        plt.imshow(utils.torch_img_to_np_img(linearized_transformed_image)[0])
+        plt.imshow(utils.torch_img_to_np_img(bilinear_transformed_image)[0])
         ax = plt.gca()
         for k in range(normalized_locations.shape[0]):
-
-            initial_loc = normalized_locations[k, j, :2].cpu().detach()
-
-            gradient = directions[k, j, :2].cpu().detach()
-
-            gt_dir = normalized_locations[k, j, :2].cpu().detach()-normalized_locations[60, j, :2].cpu().detach()
 
             if(k == 60):
                 color = 'b'
             else:
-                dir_dot = torch.dot(gt_dir/torch.norm(gt_dir), gradient/torch.norm(gradient)).numpy()
+                dir_dot = torch.dot(gt_dir[k, j]/torch.norm(gt_dir[k, j]), grads[k, j]/torch.norm(grads[k, j])).numpy()
                 dir_scalar = (dir_dot+1)/2
                 color = (dir_scalar, 1-dir_scalar, 0)
 
                 color = np.clip(color, 0, 1)
 
-            circ = Arrow(initial_loc[0].numpy(), initial_loc[1].numpy(), 
-                                    gradient[0].numpy()*10, gradient[1].numpy()*10,
+            circ = Arrow(normalized_locations[k, j, 0].numpy(), normalized_locations[k, j, 1].numpy(), 
+                                    grads[k, j, 0].numpy()*10, grads[k, j, 1].numpy()*10,
                                     width=1, color = color)
 
             ax.add_patch(circ)
@@ -268,27 +269,21 @@ def draw_gradients(model, set, name):
         plt.close()
 
         # draw gradients
-        plt.imshow(utils.torch_img_to_np_img(linearized_transformed_image)[0])
+        plt.imshow(utils.torch_img_to_np_img(bilinear_transformed_image)[0])
         ax = plt.gca()
         for k in range(normalized_locations.shape[0]):
-
-            initial_loc = normalized_locations[k, j, :2].cpu().detach()
-
-            gt_grad = gt_gradient[k, j, :2].cpu().detach()
-
-            gt_dir = normalized_locations[k, j, :2].cpu().detach()-normalized_locations[60, j, :2].cpu().detach()
 
             if(k == 60):
                 color = 'b'
             else:
-                dir_dot = torch.dot(gt_dir/torch.norm(gt_dir), gt_grad/torch.norm(gt_grad)).numpy()
+                dir_dot = torch.dot(gt_dir[k, j]/torch.norm(gt_dir[k, j]), gt_grads[k, j]/torch.norm(gt_grads[k, j])).numpy()
                 dir_scalar = (dir_dot+1)/2
                 color = (dir_scalar, 1-dir_scalar, 0)
 
                 color = np.clip(color, 0, 1)
 
-            circ = Arrow(initial_loc[0].numpy(), initial_loc[1].numpy(), 
-                                    gt_grad[0].numpy()*10, gt_grad[1].numpy()*10,
+            circ = Arrow(normalized_locations[k, j, 0].numpy(), normalized_locations[k, j, 1].numpy(), 
+                                    gt_grads[k, j, 0].numpy()*10, gt_grads[k, j, 1].numpy()*10,
                                     width=1, color = color)
 
             ax.add_patch(circ)

@@ -109,6 +109,7 @@ class data_set(Dataset):
             'gt_j2d': self.gt_j2d[index], 
             'gt_gradient': gt_gradient, 
             'cam': cam, 
+            'gt_cam': self.gt_cam[index], 
             'bboxes': self.bboxes[index], 
             'mpjpe': mpjpe, 
             'training': self.training,
@@ -279,6 +280,14 @@ def batch_rodrigues(axisang):
     return rot_mat
 
 
+def find_vertices(pose, shape, smpl):
+
+    th_pose_rotmat = th_posemap_axisang(pose).view(-1, 24, 3, 3)
+
+    pred_vertices = smpl(global_orient=th_pose_rotmat[:, 0].unsqueeze(1), body_pose=th_pose_rotmat[:, 1:], betas=shape, pose2rot=False).vertices
+    
+    return pred_vertices
+
 def find_joints(pose, shape, smpl, J_regressor):
 
     th_pose_rotmat = th_posemap_axisang(pose).view(-1, 24, 3, 3)
@@ -287,9 +296,9 @@ def find_joints(pose, shape, smpl, J_regressor):
     J_regressor_batch = J_regressor[None, :].expand(pred_vertices.shape[0], -1, -1).to(pred_vertices.device)
     pred_joints = torch.matmul(J_regressor_batch, pred_vertices)
     pred_joints = pred_joints[:, H36M_TO_J14, :]
-    pred_pelvis = (pred_joints[:,[2],:] + pred_joints[:,[3],:]) / 2.0
+    # pred_pelvis = (pred_joints[:,[2],:] + pred_joints[:,[3],:]) / 2.0
 
-    pred_joints -= pred_pelvis
+    # pred_joints -= pred_pelvis
 
     return pred_joints
 
@@ -308,15 +317,15 @@ def load_data(set):
 
     files = sorted(glob.glob(f"data/3dpw/predicted_poses/{set}/*/vibe_output.pkl"))
 
-    if(set == "train"):
+    # if(set == "train"):
 
-        J_regressor = torch.from_numpy(np.load('data/vibe_data/J_regressor_h36m.npy')).float().to(args.device)
-            
-        smpl = SMPL(
-            '{}'.format(SMPL_MODEL_DIR),
-            batch_size=64,
-            create_transl=False
-        ).to(args.device)
+    J_regressor = torch.from_numpy(np.load('data/vibe_data/J_regressor_h36m.npy')).float().to(args.device)
+        
+    smpl = SMPL(
+        '{}'.format(SMPL_MODEL_DIR),
+        batch_size=64,
+        create_transl=False
+    ).to(args.device)
 
 
     images = []
@@ -357,18 +366,18 @@ def load_data(set):
             estimated_shape.append(these_estimated_shape)
 
 
-            if(set == "train"):
-                gt_j3ds = find_joints(these_gt_pose.to(args.device), these_gt_shape.to(args.device), smpl, J_regressor).cpu()
+            # if(set == "train"):
+            gt_j3ds = find_joints(these_gt_pose.to(args.device), these_gt_shape.to(args.device), smpl, J_regressor).cpu()
 
-                gt_j3ds = move_gt_pelvis(gt_j3ds, j3ds)
+            # gt_j3ds = move_gt_pelvis(gt_j3ds, j3ds)
 
-                gt_j3d.append(gt_j3ds)
-            else:
-                gt_j3ds = torch.Tensor(data[person]['gt_joints3d'])
+            gt_j3d.append(gt_j3ds)
+            # else:
+            #     gt_j3ds = torch.Tensor(data[person]['gt_joints3d'])
 
-                gt_j3ds = move_gt_pelvis(gt_j3ds, j3ds)
+            #     # gt_j3ds = move_gt_pelvis(gt_j3ds, j3ds)
 
-                gt_j3d.append(gt_j3ds)
+            #     gt_j3d.append(gt_j3ds)
 
     images = np.concatenate(images)
     estimated_j3d = torch.cat(estimated_j3d)

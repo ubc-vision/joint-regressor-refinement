@@ -32,7 +32,7 @@ class Crop_Model(nn.Module):
         self.resnet = getattr(models, "resnet18")(norm_layer=MyGroupNorm)
         self.resnet = nn.Sequential(*list(self.resnet.children())[:3], *list(self.resnet.children())[4:-2])
 
-        self.linearized_sampler = sampling_helper.DifferentiableImageSampler('linearized', 'zeros')
+        self.bilinear_sampler = sampling_helper.DifferentiableImageSampler('bilinear', 'zeros')
         self.crop_scalar = args.crop_scalar
         self.crop_size = [64, 64]
         self.linear_operations = []
@@ -108,14 +108,15 @@ class Crop_Model(nn.Module):
 
             transformation_mat = perturbation_helper.vec2mat_for_similarity(vec)
 
-            linearized_transformed_image = self.linearized_sampler.warp_image(image, transformation_mat, out_shape=self.crop_size).contiguous()
+            bilinear_transformed_image = self.bilinear_sampler.warp_image(image, transformation_mat, out_shape=self.crop_size).contiguous()
 
+            
             if(training):
-                linearized_transformed_image = self.data_transforms(linearized_transformed_image)
+                bilinear_transformed_image = self.data_transforms(bilinear_transformed_image)
             else:
-                linearized_transformed_image = self.normalize(linearized_transformed_image)
+                bilinear_transformed_image = self.normalize(bilinear_transformed_image)
 
-            output = self.resnet(linearized_transformed_image)
+            output = self.resnet(bilinear_transformed_image)
             
             output = output.reshape(-1, self.num_inputs)
 

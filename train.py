@@ -29,9 +29,9 @@ def train_crop_model():
 
     loss_function = nn.MSELoss()
 
-    loader = torch.utils.data.DataLoader(this_data_set, batch_size = args.training_batch_size, num_workers=4, shuffle=True, drop_last=True)
+    loader = torch.utils.data.DataLoader(this_data_set, batch_size = args.training_batch_size, num_workers=0, shuffle=False, drop_last=True)
 
-    val_loader = torch.utils.data.DataLoader(val_data_set, batch_size = args.training_batch_size, num_workers=1, shuffle=True)
+    val_loader = torch.utils.data.DataLoader(val_data_set, batch_size = args.training_batch_size, num_workers=1, shuffle=False)
 
     for epoch in range(args.train_epochs):
 
@@ -41,7 +41,8 @@ def train_crop_model():
 
         val_iterator = iter(val_loader)
 
-        for iteration in tqdm(range(len(loader))):
+        # for iteration in tqdm(range(len(loader))):
+        for iteration in range(len(loader)):
 
             batch = next(iterator)
 
@@ -55,17 +56,18 @@ def train_crop_model():
 
             estimated_error_loss = loss_function(estimated_loss, batch['mpjpe'])
 
-            pred_grad = torch.autograd.grad(
-                                estimated_error_loss, batch['estimated_j3d'], 
-                                retain_graph=True, 
-                                create_graph=True
-                                )[0]
+            # pred_grad = torch.autograd.grad(
+            #                     estimated_error_loss, batch['estimated_j3d'], 
+            #                     retain_graph=True, 
+            #                     create_graph=True
+            #                     )[0]
 
-            # batch['estimated_j3d'].requires_grad = False
+            # # batch['estimated_j3d'].requires_grad = False
 
-            gradient_loss = loss_function(pred_grad, batch['gt_gradient'])
+            # gradient_loss = loss_function(pred_grad, batch['gt_gradient'])
 
-            loss = estimated_error_loss+args.grad_loss_weight*gradient_loss
+            # loss = estimated_error_loss+args.grad_loss_weight*gradient_loss
+            loss = estimated_error_loss
 
             total_loss += loss.item()
 
@@ -73,14 +75,15 @@ def train_crop_model():
 
             if(args.wandb_log):
 
-                wandb.log({"loss": loss.item(), "gradient_loss": gradient_loss.item(), "estimated_error_loss": estimated_error_loss.item()})
+                wandb.log({"loss": loss.item(), "estimated_error_loss": estimated_error_loss.item()})
 
             optimizer.step()
 
 
             del batch
 
-            if(iteration%10==0):
+            # if(iteration%10==0):
+            if(False):
 
                 model.eval()
                 val_batch = next(val_iterator)
@@ -101,11 +104,11 @@ def train_crop_model():
 
         print(f"epoch: {epoch}, loss: {total_loss}")
 
-        if(args.wandb_log):
+        if(epoch %100 == 0 and args.wandb_log):
             draw_gradients(model, "train", "train")
             draw_gradients(model, "validation", "validation")
 
-        torch.save(model.state_dict(), f"models/linearized_model_{args.crop_scalar}_epoch{epoch}.pt")
+        # torch.save(model.state_dict(), f"models/linearized_model_{args.crop_scalar}_epoch{epoch}.pt")
 
         # scheduler.step()
     

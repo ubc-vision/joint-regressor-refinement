@@ -12,7 +12,7 @@ if __name__ == "__main__":
 
     
     if(args.wandb_log):
-        wandb.init(project="human_body_pose_optimization", name="linearized_6_no_bias")
+        wandb.init(project="human_body_pose_optimization", name="optimizing_linearized")
         wandb.config.update(args) 
 
     
@@ -23,10 +23,13 @@ if __name__ == "__main__":
 
     model = Crop_Model().to(args.device)
 
-    model.load_state_dict(torch.load(f"models/linearized_model_8_epoch49.pt", map_location=args.device))
+    model.load_state_dict(torch.load(f"models/linearized_model_6_epoch49.pt", map_location=args.device))
 
     # for i in range(10):
     #     draw_gradients(model, "train", "demo_images_train")
+
+    # for i in range(10):
+    #     draw_gradients(model, "validation", "demo_images_train")
 
     test_crop_model(model)
 
