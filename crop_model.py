@@ -1,13 +1,17 @@
 import torch
 from torch import nn
 import torchvision.models as models
-from torchvision import transforms
 
 from warp import perturbation_helper, sampling_helper 
 
 from args import args
 
-from data import projection
+from data import project_points
+
+import matplotlib.pyplot as plt
+
+import constants
+
 
 
 class MyGroupNorm(nn.Module):
@@ -23,25 +27,28 @@ class MyGroupNorm(nn.Module):
 
 class Crop_Model(nn.Module):
     # def __init__(self, num_inputs, num_joints):
-    def __init__(self):
+    def __init__(self, testing=False):
         super(Crop_Model, self).__init__()
 
-        self.num_inputs = 512*4*4
-        self.num_joints = 14
+        self.num_inputs = 2048*4*4
+        self.num_joints = len(constants.GT_2_J17)
 
-        self.resnet = getattr(models, "resnet18")(norm_layer=MyGroupNorm)
+        self.testing = testing
+
+        self.resnet = getattr(models, "resnet50")(norm_layer=MyGroupNorm)
+        # self.resnet = models.resnet34(pretrained=True)
+
         self.resnet = nn.Sequential(*list(self.resnet.children())[:3], *list(self.resnet.children())[4:-2])
 
-        self.bilinear_sampler = sampling_helper.DifferentiableImageSampler('bilinear', 'zeros')
+        self.linearized_sampler = sampling_helper.DifferentiableImageSampler('linearized', 'zeros')
         self.crop_scalar = args.crop_scalar
         self.crop_size = [64, 64]
         self.linear_operations = []
 
-        for i in range(14):
+        for i in range(self.num_joints):
 
             linear_operation = nn.Sequential(
                 nn.Linear(self.num_inputs, 512),
-                # nn.GroupNorm(32, 512),
                 nn.ReLU(),
                 nn.Linear(512, 512),
             ).to(args.device)
@@ -49,13 +56,6 @@ class Crop_Model(nn.Module):
             self.linear_operations.append(linear_operation)
 
         self.linear_operations = nn.ModuleList(self.linear_operations)
-
-
-        self.normalize = transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
-        self.data_transforms = transforms.Compose([
-                self.normalize,
-                transforms.ColorJitter(brightness=.2, contrast=.2, saturation=.3, hue=0)
-                ])
         
 
         # for param in self.linear_operations.parameters():
@@ -65,26 +65,20 @@ class Crop_Model(nn.Module):
     def forward(self, input_dict):  
 
         image = input_dict['image']
-        dims_before = input_dict['dims_before']
-        joints3d = input_dict['estimated_j3d']
-        cam = input_dict['cam']
-        # gt_j2d = input_dict['gt_j2d']
-        bboxes = input_dict['bboxes']
+        joints3d = input_dict['joints3d']
 
-        training = input_dict["training"][0]
+        intrinsics = input_dict['intrinsics']
+
+        batch_size  = image.shape[0]
 
         self.input_images = []
 
         # for every joint, get the crop centred at the reprojected 2d location
 
-        joints2d = projection(joints3d, cam)
-
-        bboxes = bboxes.unsqueeze(1).expand(-1, joints2d.shape[1], -1)
-
-        joints2d[:, :, 0] *= bboxes[:, :, 2]/2*1.1
-        joints2d[:, :, 0] += bboxes[:, :, 0]
-        joints2d[:, :, 1] *= bboxes[:, :, 3]/2*1.1
-        joints2d[:, :, 1] += bboxes[:, :, 1]
+        if(self.testing==False):
+            joints2d = project_points(joints3d, intrinsics)
+        else:
+            joints2d = joints3d[..., :2]
 
         zeros = torch.zeros(image.shape[0]).to(args.device)
         ones = torch.ones(image.shape[0]).to(args.device)
@@ -94,35 +88,30 @@ class Crop_Model(nn.Module):
 
         error_estimates = []
 
-        for i in range(14):
-            
-            dx = joints2d[:, i, 0]/(dims_before[:, 1]/2)-1
-            x_mult = torch.where(dims_before[:, 0]==1920, 1080/1920*ones, ones)
-            dx = dx*x_mult
 
-            dy = joints2d[:, i, 1]/(dims_before[:, 0]/2)-1
-            y_mult = torch.where(dims_before[:, 0]==1080, 1080/1920*ones, ones)
-            dy = dy*y_mult
+        for i in range(self.num_joints):
+            
+            dx = joints2d[:, i, 0]/500-1
+
+            dy = joints2d[:, i, 1]/500-1
 
             vec = torch.stack([zeros, ones/self.crop_scalar, ones/self.crop_scalar, self.crop_scalar*dx, self.crop_scalar*dy], dim=1)
 
             transformation_mat = perturbation_helper.vec2mat_for_similarity(vec)
 
-            bilinear_transformed_image = self.bilinear_sampler.warp_image(image, transformation_mat, out_shape=self.crop_size).contiguous()
 
-            
-            if(training):
-                bilinear_transformed_image = self.data_transforms(bilinear_transformed_image)
-            else:
-                bilinear_transformed_image = self.normalize(bilinear_transformed_image)
+            linearized_transformed_image = self.linearized_sampler.warp_image(image, transformation_mat, out_shape=self.crop_size).contiguous()
 
-            output = self.resnet(bilinear_transformed_image)
-            
+            output = self.resnet(linearized_transformed_image)
+
             output = output.reshape(-1, self.num_inputs)
 
             error_estimate = self.linear_operations[i](output)
 
-            error_estimate = torch.norm(error_estimate, dim=-1)/150
+
+            error_estimate = torch.norm(error_estimate, dim=-1)
+
+            # print(error_estimate.shape)
 
             error_estimates.append(error_estimate)
 
