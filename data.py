@@ -15,32 +15,43 @@ from utils import utils
 
 from args import args
 
+import pickle
+
 import constants
 
 import create_smpl_gt
 
 from pytorch3d.renderer import PerspectiveCameras
 
+from warp import perturbation_helper, sampling_helper
+
 
 class data_set(Dataset):
-    def __init__(self, input_dict, precomputed_dict=None):
+    def __init__(self, set):
 
-        self.includes_precomputed = False
+        if(set == "train"):
+            location = "/scratch/iamerich/human36m/processed/saved_output_train/ground_truth_pose/"
+        else:
+            location = "/scratch/iamerich/human36m/processed/saved_output_val/ground_truth_pose/"
 
-        self.images = input_dict['images']
-        self.gt_j3d = input_dict['gt_j3d']
-        self.gt_j2d = input_dict['gt_j2d']
-        self.intrinsics = input_dict['intrinsics']
-        if(precomputed_dict is not None):
-            self.includes_precomputed = True
-            self.joints3d = precomputed_dict["j3d_with_noise"]
-            self.joints2d = precomputed_dict["j2d_with_noise"]
-            self.mpjpe_2d = precomputed_dict["mpjpe_2d"]
-            self.mpjpe_3d = precomputed_dict["mpjpe_3d"]
-            self.orient = precomputed_dict["orient"]
-            self.pose = precomputed_dict["pose"]
-            self.pred_betas = precomputed_dict["pred_betas"]
-            self.estimated_translation = precomputed_dict["estimated_translation"]
+        self.bboxes = torch.load(
+            f"{location}bboxes.pt", map_location="cpu")
+        self.betas = torch.load(
+            f"{location}betas.pt", map_location="cpu")
+        self.estimated_translation = torch.load(
+            f"{location}estimated_translation.pt", map_location="cpu")
+        self.gt_j2d = torch.load(
+            f"{location}gt_j2d.pt", map_location="cpu")
+        self.gt_j3d = torch.load(
+            f"{location}gt_j3d.pt", map_location="cpu")
+        self.images = pickle.load(open(f"{location}images.pkl", 'rb'))
+        self.intrinsics = torch.load(
+            f"{location}intrinsics.pt", map_location="cpu")
+        self.orient = torch.load(
+            f"{location}orient.pt", map_location="cpu")
+        self.pixel_annotations = pickle.load(
+            open(f"{location}pixel_annotations.pkl", 'rb'))
+        self.pose = torch.load(f"{location}pose.pt", map_location="cpu")
 
     def __getitem__(self, index):
 
@@ -50,34 +61,149 @@ class data_set(Dataset):
         image = utils.np_img_to_torch_img(image).float(
         )[:, :constants.IMG_RES, :constants.IMG_RES]
 
-        if(self.includes_precomputed):
+        mask_name = self.images[index].split("imageSequence")
+        mask_name = f"{mask_name[0]}maskSequence{mask_name[1]}"
+        mask_rcnn = imageio.imread(f"{mask_name}")/255.0
+        mask_rcnn = utils.np_img_to_torch_img(mask_rcnn).float(
+        )
 
-            output_dict = {
-                "image": image,
-                "gt_j3d": self.gt_j3d[index],
-                "gt_j2d": self.gt_j2d[index],
-                "intrinsics": self.intrinsics[index],
-                "joints3d": self.joints3d[index],
-                "joints2d": self.joints2d[index],
-                "mpjpe_2d": self.mpjpe_2d[index],
-                "mpjpe_3d": self.mpjpe_3d[index],
-                "orient": self.orient[index],
-                "pose": self.pose[index],
-                "pred_betas": self.pred_betas[index],
-                "estimated_translation": self.estimated_translation[index],
-            }
-        else:
-            output_dict = {
-                "image": image,
-                "gt_j3d": self.gt_j3d[index],
-                "gt_j2d": self.gt_j2d[index],
-                "intrinsics": self.intrinsics[index],
-            }
+        valid = mask_rcnn[0, 0] != 0
+
+        mask_rcnn[:2, :2] = 0
+
+        # image, _, _, _, intrinsics = find_crop(
+        #     image, self.gt_j2d[index].unsqueeze(0), self.intrinsics[index].unsqueeze(0))
+
+        image, _, _, _, intrinsics = find_crop_mask(
+            image, self.bboxes[index].unsqueeze(0), self.intrinsics[index].unsqueeze(0))
+
+        output_dict = {
+            "bboxes": self.bboxes[index],
+            "betas": self.betas[index],
+            "gt_translation": self.estimated_translation[index],
+            "gt_j2d": self.gt_j2d[index],
+            "gt_j3d": self.gt_j3d[index],
+            "valid": valid,
+            "mask_rcnn": mask_rcnn.unsqueeze(0),
+            "image": image[0],
+            "intrinsics": intrinsics[0],
+            "orient": self.orient[index],
+            "pixel_annotations": self.pixel_annotations[index],
+            "pose": self.pose[index],
+        }
 
         return output_dict
 
     def __len__(self):
         return len(self.images)
+
+
+def find_crop(image, joints_2d, intrinsics):
+
+    batch_size = joints_2d.shape[0]
+    min_x = torch.min(joints_2d[..., 0], dim=1)[0]
+    max_x = torch.max(joints_2d[..., 0], dim=1)[0]
+    min_y = torch.min(joints_2d[..., 1], dim=1)[0]
+    max_y = torch.max(joints_2d[..., 1], dim=1)[0]
+
+    min_x = (min_x-500)/500
+    max_x = (max_x-500)/500
+    min_y = (min_y-500)/500
+    max_y = (max_y-500)/500
+
+    average_x = (min_x+max_x)/2
+    average_y = (min_y+max_y)/2
+
+    scale_x = (max_x-min_x)*1.2
+    scale_y = (max_y-min_y)*1.2
+
+    scale = torch.where(scale_x > scale_y, scale_x, scale_y)
+
+    # print(scale[:3])
+    # print(average_x[:3])
+
+    scale /= 2
+
+    min_x = (average_x-scale)*500+500
+    min_y = (average_y-scale)*500+500
+
+    zeros = torch.zeros(batch_size).to(image.device)
+    ones = torch.ones(batch_size).to(image.device)
+
+    bilinear_sampler = sampling_helper.DifferentiableImageSampler(
+        'bilinear', 'zeros')
+
+    vec = torch.stack([zeros, scale, scale, average_x /
+                       scale, average_y/scale], dim=1)
+
+    average_x = (average_x)*500+500
+    average_y = (average_y)*500+500
+
+    transformation_mat = perturbation_helper.vec2mat_for_similarity(vec)
+
+    image = bilinear_sampler.warp_image(
+        image, transformation_mat, out_shape=[224, 224]).contiguous()
+
+    intrinsics = crop_intrinsics(
+        intrinsics, 1000*scale, 1000*scale, average_y, average_x)
+    intrinsics = resize_intrinsics(
+        intrinsics, 1000*scale, 1000*scale, 224/(scale*1000))
+
+    return image, min_x, min_y, scale, intrinsics
+
+
+def find_crop_mask(image, mask, intrinsics):
+
+    batch_size = mask.shape[0]
+    min_x = mask[:, 1]
+    max_x = mask[:, 3]
+    min_y = mask[:, 0]
+    max_y = mask[:, 2]
+
+    min_x = (min_x-500)/500
+    max_x = (max_x-500)/500
+    min_y = (min_y-500)/500
+    max_y = (max_y-500)/500
+
+    average_x = (min_x+max_x)/2
+    average_y = (min_y+max_y)/2
+
+    scale_x = (max_x-min_x)
+    scale_y = (max_y-min_y)
+
+    scale = torch.where(scale_x > scale_y, scale_x, scale_y)
+
+    # print(scale[:3])
+    # print(average_x[:3])
+
+    scale /= 2
+
+    min_x = (average_x-scale)*500+500
+    min_y = (average_y-scale)*500+500
+
+    zeros = torch.zeros(batch_size).to(image.device)
+    ones = torch.ones(batch_size).to(image.device)
+
+    bilinear_sampler = sampling_helper.DifferentiableImageSampler(
+        'bilinear', 'zeros')
+
+    vec = torch.stack([zeros, scale, scale, average_x /
+                       scale, average_y/scale], dim=1)
+
+    average_x = (average_x)*500+500
+    average_y = (average_y)*500+500
+
+    transformation_mat = perturbation_helper.vec2mat_for_similarity(vec)
+
+    image = bilinear_sampler.warp_image(
+        image, transformation_mat, out_shape=[224, 224]).contiguous()
+
+    intrinsics = crop_intrinsics(
+        intrinsics, 1000*scale, 1000*scale, average_y, average_x)
+    intrinsics = resize_intrinsics(
+        intrinsics, 1000*scale, 1000*scale, 224/(scale*1000))
+
+    return image, min_x, min_y, scale, intrinsics
 
 
 def load_data(set):
@@ -189,3 +315,70 @@ def load_precompted(epoch=None):
         "pose": pose,
         "pred_betas": pred_betas,
     }
+
+
+def crop_intrinsics(intrinsics, height, width, crop_ci, crop_cj):
+    """ Convert to new camera intrinsics for crop of image from original camera.
+    Parameters
+    ----------
+    height : int
+        height of crop window
+    width : int
+        width of crop window
+    crop_ci : int
+        row of crop window center
+    crop_cj : int
+        col of crop window center
+    Returns
+    -------
+    :obj:`CameraIntrinsics`
+        camera intrinsics for cropped window
+    """
+    x0 = intrinsics[:, 0, 2]
+    y0 = intrinsics[:, 1, 2]
+    cx = x0 + (width-1)/2 - crop_cj
+    cy = y0 + (height-1)/2 - crop_ci
+
+    cropped_intrinsics = intrinsics.clone()
+    cropped_intrinsics[:, 0, 2] = cx
+    cropped_intrinsics[:, 1, 2] = cy
+    return cropped_intrinsics
+
+
+def resize_intrinsics(intrinsics, height, width, scale):
+    """ Convert to new camera intrinsics with parameters for resized image.
+
+    Parameters
+    ----------
+    scale : float
+        the amount to rescale the intrinsics
+
+    Returns
+    -------
+    :obj:`CameraIntrinsics`
+        camera intrinsics for resized image        
+    """
+    x0 = intrinsics[:, 0, 2]
+    y0 = intrinsics[:, 1, 2]
+    fx = intrinsics[:, 0, 0]
+    fy = intrinsics[:, 1, 1]
+
+    center_x = (width-1) / 2
+    center_y = (height-1) / 2
+    orig_cx_diff = x0 - center_x
+    orig_cy_diff = y0 - center_y
+    height = scale*height
+    width = scale*width
+    scaled_center_x = (width-1) / 2
+    scaled_center_y = (height-1) / 2
+    fx = scale * fx
+    fy = scale * fy
+    cx = scaled_center_x + scale * orig_cx_diff
+    cy = scaled_center_y + scale * orig_cy_diff
+
+    scaled_intrinsics = intrinsics.clone()
+    scaled_intrinsics[:, 0, 2] = cx
+    scaled_intrinsics[:, 1, 2] = cy
+    scaled_intrinsics[:, 0, 0] = fx
+    scaled_intrinsics[:, 1, 1] = fy
+    return scaled_intrinsics
