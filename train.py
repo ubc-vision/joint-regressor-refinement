@@ -7,6 +7,7 @@ from tqdm import tqdm
 
 
 from pose_refiner import Pose_Refiner
+from renderer import Renderer
 from discriminator import Discriminator
 
 
@@ -106,13 +107,15 @@ def train_pose_refiner_model():
     J_regressor = torch.from_numpy(
         np.load('SPIN/data/J_regressor_h36m.npy')).float().to(args.device)
 
+    img_renderer = Renderer(subset=True)
+
     pose_refiner = Pose_Refiner().to(args.device)
-    checkpoint = torch.load(
-        "models/best_pose_refiner/pose_refiner_epoch_0.pt", map_location=args.device)
-    spin_model.load_state_dict(checkpoint['model'], strict=False)
+    # checkpoint = torch.load(
+    #     "models/best_pose_refiner/gt_intrinsics_maskrcnn.pt", map_location=args.device)
+    # pose_refiner.load_state_dict(checkpoint)
     pose_refiner.train()
-    print("model load worked succesfully")
-    exit()
+    # print("model load worked succesfully")
+    # exit()
     pose_discriminator = Discriminator().to(args.device)
     pose_discriminator.train()
 
@@ -130,9 +133,9 @@ def train_pose_refiner_model():
     val_data = data_set("validation")
 
     loader = torch.utils.data.DataLoader(
-        data, batch_size=args.training_batch_size, num_workers=4, pin_memory=True, shuffle=True, drop_last=True)
+        data, batch_size=args.batch_size, num_workers=4, pin_memory=True, shuffle=True, drop_last=True)
     val_loader = torch.utils.data.DataLoader(
-        val_data, batch_size=args.training_batch_size, num_workers=1, pin_memory=True, shuffle=True, drop_last=True)
+        val_data, batch_size=args.batch_size, num_workers=1, pin_memory=True, shuffle=True, drop_last=True)
 
     normalize = transforms.Normalize(
         (0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
@@ -149,7 +152,8 @@ def train_pose_refiner_model():
             batch = next(iterator)
 
             for item in batch:
-                batch[item] = batch[item].to(args.device).float()
+                if(item != "valid" and item != "path" and item != "pixel_annotations"):
+                    batch[item] = batch[item].to(args.device).float()
 
             # train generator
 
@@ -158,18 +162,18 @@ def train_pose_refiner_model():
             spin_image = normalize(batch['image'])
 
             with torch.no_grad():
-                pred_pose, pred_betas, pred_camera = spin_model(
+                spin_pred_pose, pred_betas, pred_camera = spin_model(
                     spin_image)
 
-            pred_cam_t = torch.stack([-2*pred_camera[:, 1],
-                                      -2*pred_camera[:, 2],
-                                      2*5000/(224 * pred_camera[:, 0] + 1e-9)], dim=-1)
-            batch["gt_translation"] = pred_cam_t
+            # pred_cam_t = torch.stack([-2*pred_camera[:, 1],
+            #                           -2*pred_camera[:, 2],
+            #                           2*5000/(224 * pred_camera[:, 0] + 1e-9)], dim=-1)
+            # batch["cam"] = pred_cam_t
 
-            pred_rotmat = rot6d_to_rotmat(pred_pose).view(-1, 24, 3, 3)
+            pred_rotmat = rot6d_to_rotmat(spin_pred_pose).view(-1, 24, 3, 3)
 
-            batch["pose"] = pred_pose[:, 1:]
-            batch["orient"] = pred_pose[:, 0].unsqueeze(1)
+            batch["pose"] = spin_pred_pose[:, 1:]
+            batch["orient"] = spin_pred_pose[:, 0].unsqueeze(1)
             batch["betas"] = pred_betas
 
             pred_joints = find_joints(
@@ -178,10 +182,12 @@ def train_pose_refiner_model():
             mpjpe_before_refinement, pampjpe_before_refinement = evaluate(
                 pred_joints, batch['gt_j3d'])
 
-            pred_rotmat, pred_rot6d = pose_refiner(batch)
+            est_pose, est_betas, est_cam = pose_refiner(batch)
 
-            batch["orient"] = pred_rot6d[:, :1]
-            batch["pose"] = pred_rot6d[:, 1:]
+            batch["betas"] = est_betas
+            batch["cam"] = est_cam
+
+            pred_rotmat = rot6d_to_rotmat(est_pose).view(-1, 24, 3, 3)
 
             pred_joints = find_joints(
                 smpl, batch["betas"], pred_rotmat[:, :1], pred_rotmat[:, 1:], J_regressor)
@@ -194,12 +200,20 @@ def train_pose_refiner_model():
             joint_loss = loss_function(pred_joints, batch['gt_j3d']/1000)
 
             # add a loss so the estimates dont stray too far from original
-            pred_disc = pose_discriminator(pred_rot6d)
+            pred_disc = pose_discriminator(
+                torch.cat([batch["orient"], batch["pose"]], dim=1))
 
             discriminated_loss = loss_function(pred_disc, torch.ones(
                 pred_disc.shape).to(args.device))
 
-            loss = joint_loss+discriminated_loss/1000
+            rendered_silhouette = img_renderer(batch)
+
+            rendered_silhouette = rendered_silhouette[:, 3].unsqueeze(1)
+
+            silhouette_loss = loss_function(
+                rendered_silhouette[batch["valid"]], batch["mask_rcnn"][batch["valid"]])
+
+            loss = joint_loss+discriminated_loss/1000+silhouette_loss/100
 
             optimizer.zero_grad()
             loss.backward()
@@ -207,8 +221,8 @@ def train_pose_refiner_model():
 
             # train discriminator
 
-            pred_gt = pose_discriminator(pred_pose)
-            pred_disc = pose_discriminator(pred_rot6d.detach())
+            pred_gt = pose_discriminator(spin_pred_pose)
+            pred_disc = pose_discriminator(est_pose.detach())
 
             discriminator_loss = loss_function(pred_disc, torch.zeros(
                 pred_disc.shape).to(args.device))+loss_function(pred_gt, torch.ones(
@@ -224,6 +238,7 @@ def train_pose_refiner_model():
                     {
                         "joint_loss": joint_loss.item(),
                         "discriminated_loss": discriminated_loss,
+                        "silhouette_loss": silhouette_loss,
                         "discriminator_loss": discriminator_loss,
                         "mpjpe_before_refinement": mpjpe_before_refinement.item(),
                         "pampjpe_before_refinement": pampjpe_before_refinement.item(),
@@ -241,39 +256,43 @@ def train_pose_refiner_model():
                     batch = next(val_iterator)
 
                     for item in batch:
-                        batch[item] = batch[item].to(args.device).float()
+                        if(item != "valid" and item != "path" and item != "pixel_annotations"):
+                            batch[item] = batch[item].to(args.device).float()
 
                     spin_image = normalize(batch['image'])
 
-                    pred_pose, pred_betas, pred_camera = spin_model(
+                    spin_pred_pose, pred_betas, pred_camera = spin_model(
                         spin_image)
 
-                    pred_cam_t = torch.stack([-2*pred_camera[:, 1],
-                                              -2*pred_camera[:, 2],
-                                              2*5000/(224 * pred_camera[:, 0] + 1e-9)], dim=-1)
-                    batch["gt_translation"] = pred_cam_t
+                    # pred_cam_t = torch.stack([-2*pred_camera[:, 1],
+                    #                           -2*pred_camera[:, 2],
+                    #                           2*5000/(224 * pred_camera[:, 0] + 1e-9)], dim=-1)
+                    # batch["gt_translation"] = pred_cam_t
 
-                    pred_rotmat = rot6d_to_rotmat(pred_pose).view(-1, 24, 3, 3)
+                    pred_rotmat = rot6d_to_rotmat(
+                        spin_pred_pose).view(-1, 24, 3, 3)
 
-                    batch["pose"] = pred_pose[:, 1:]
-                    batch["orient"] = pred_pose[:, 0].unsqueeze(1)
+                    batch["pose"] = spin_pred_pose[:, 1:]
+                    batch["orient"] = spin_pred_pose[:, 0].unsqueeze(1)
                     batch["betas"] = pred_betas
 
                     pred_joints = find_joints(
                         smpl, batch["betas"], pred_rotmat[:, 0].unsqueeze(1), pred_rotmat[:, 1:], J_regressor)
 
-                    pred_joints = move_pelvis(pred_joints)
-
                     mpjpe_before_refinement, pampjpe_before_refinement = evaluate(
                         pred_joints, batch['gt_j3d'])
 
-                    pred_rotmat, pred_rot6d = pose_refiner(batch)
+                    est_pose, est_betas, est_cam = pose_refiner(batch)
 
-                    batch["pose"] = pred_rot6d[:, 1:]
-                    batch["orient"] = pred_rot6d[:, 0].unsqueeze(1)
+                    batch["betas"] = est_betas
+                    batch["cam"] = est_cam
+
+                    pred_rotmat = rot6d_to_rotmat(est_pose).view(-1, 24, 3, 3)
 
                     pred_joints = find_joints(
                         smpl, batch["betas"], pred_rotmat[:, :1], pred_rotmat[:, 1:], J_regressor)
+
+                    pred_joints = move_pelvis(pred_joints)
 
                     mpjpe_after, pampjpe_after = evaluate(
                         pred_joints, batch['gt_j3d'])

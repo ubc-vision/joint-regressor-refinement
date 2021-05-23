@@ -16,8 +16,8 @@ if __name__ == "__main__":
 
     if(args.wandb_log):
         wandb.init(project="human_body_pose_optimization",
-                   name="training_discriminator")
+                   name="training gt intrinsics")
         wandb.config.update(args)
 
-    optimize_pose_refiner()
-    # train_pose_refiner_model()
+    # optimize_pose_refiner()
+    train_pose_refiner_model()

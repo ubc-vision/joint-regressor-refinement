@@ -34,8 +34,6 @@ import pytorch3d
 from pytorch3d.structures import Pointclouds
 from pytorch3d.renderer import look_at_view_transform, PerspectiveCameras, PointsRasterizationSettings, PointsRasterizer, AlphaCompositor, PointsRenderer
 
-from eval_utils import batch_compute_similarity_transform_torch
-
 from SPIN.utils.geometry import rot6d_to_rotmat
 
 from utils import utils
@@ -95,16 +93,16 @@ def optimize_pose_refiner():
     J_regressor_retrained = J_regressor.clone()
     J_regressor_retrained.requires_grad = True
 
-    raster_settings = PointsRasterizationSettings(
-        image_size=224,
-        radius=0.04,
-        points_per_pixel=10
-    )
-    raster_settings_img = PointsRasterizationSettings(
-        image_size=224,
-        radius=0.005,
-        points_per_pixel=10
-    )
+    # raster_settings = PointsRasterizationSettings(
+    #     image_size=224,
+    #     radius=0.04,
+    #     points_per_pixel=10
+    # )
+    # raster_settings_img = PointsRasterizationSettings(
+    #     image_size=224,
+    #     radius=0.005,
+    #     points_per_pixel=10
+    # )
 
     img_renderer = Renderer()
     # img_renderer = Mesh_Renderer()
@@ -202,10 +200,7 @@ def optimize_pose_refiner():
                 joint_loss = loss_function(move_pelvis(
                     pred_joints), batch['gt_j3d']/1000)
 
-                rendered_silhouette = img_renderer(
-                    batch, smpl, raster_settings)
-                # rendered_silhouette = img_renderer(
-                #     batch, smpl)
+                rendered_silhouette = img_renderer(batch)
 
                 rendered_silhouette = rendered_silhouette[:, 3].unsqueeze(1)
 

@@ -80,7 +80,7 @@ class data_set(Dataset):
         output_dict = {
             "bboxes": self.bboxes[index],
             "betas": self.betas[index],
-            "gt_translation": self.estimated_translation[index],
+            "cam": self.estimated_translation[index],
             "gt_j2d": self.gt_j2d[index],
             "gt_j3d": self.gt_j3d[index],
             "valid": valid,

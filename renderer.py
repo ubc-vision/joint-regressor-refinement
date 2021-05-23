@@ -27,14 +27,34 @@ from torch.nn import functional as F
 
 class Renderer(nn.Module):
     # def __init__(self, num_inputs, num_joints):
-    def __init__(self):
+    def __init__(self, subset):
         super(Renderer, self).__init__()
 
         self.sorted_indices = np.load("data/body_model/sorted_indices.npy")
         self.sorted_indices = torch.tensor(
             self.sorted_indices, dtype=torch.long).to(args.device)[:, 0]
 
-    def forward(self, batch, smpl, raster_settings, subset=True, colored=True):
+        self.subset = subset
+
+        if(subset):
+            self.raster_settings = PointsRasterizationSettings(
+                image_size=224,
+                radius=0.04,
+                points_per_pixel=10
+            )
+        else:
+            self.raster_settings = PointsRasterizationSettings(
+                image_size=224,
+                radius=0.02,
+                points_per_pixel=10
+            )
+
+        self.smpl = SMPL(
+            '{}'.format("SPIN/data/smpl"),
+            batch_size=1,
+        ).to(args.device)
+
+    def forward(self, batch):
 
         # import time
 
@@ -53,12 +73,16 @@ class Renderer(nn.Module):
         orient = rot6d_to_rotmat(
             batch['orient'].reshape(-1, 6)).reshape(-1, 1, 3, 3)
 
-        point_cloud = smpl(betas=batch['betas'], body_pose=pose,
-                           global_orient=orient, pose2rot=False).vertices
+        point_cloud = self.smpl(betas=batch['betas'], body_pose=pose,
+                                global_orient=orient, pose2rot=False).vertices
 
-        if(subset):
+        if(self.subset):
             idx = self.sorted_indices[-700:]
             point_cloud = point_cloud[:, idx]
+
+        point_cloud[:, :, 1] *= -1
+        point_cloud[:, :, 0] *= -1
+        point_cloud *= 2
 
         cameras = PerspectiveCameras(device=args.device, T=batch['cam'],
                                      focal_length=focal_length, principal_point=principal_point)
@@ -69,21 +93,27 @@ class Renderer(nn.Module):
         feat = torch.ones(
             point_cloud.shape[0], point_cloud.shape[1], 4).to(args.device)
 
-        point_cloud[:, :, 1] *= -1
-        point_cloud[:, :, 0] *= -1
-        point_cloud *= 2
+        pred_verts_2d = cameras.transform_points_screen(
+            point_cloud, image_size)
 
-        # pred_joints[:, :, 1] *= -1
-        # pred_joints[:, :, 0] *= -1
-        # pred_joints *= 2
+        furthest_point = torch.max(pred_verts_2d[..., 2], dim=1).values
+        closest_point = torch.min(pred_verts_2d[..., 2], dim=1).values
 
-        # pred_joints_2d = cameras.transform_points_screen(
-        #     pred_joints, image_size)
+        furthest_point = furthest_point.unsqueeze(
+            -1).expand(point_cloud.shape[:-1])
+        closest_point = closest_point.unsqueeze(
+            -1).expand(point_cloud.shape[:-1])
+
+        dist = (pred_verts_2d[..., 2]-closest_point) / \
+            (furthest_point-closest_point)
+
+        feat[..., 0] = 1-dist
+        feat[..., 1] = dist
 
         this_point_cloud = Pointclouds(points=point_cloud, features=feat)
 
         rasterizer = PointsRasterizer(
-            cameras=cameras, raster_settings=raster_settings)
+            cameras=cameras, raster_settings=self.raster_settings)
 
         renderer = PointsRenderer(
             rasterizer=rasterizer,
