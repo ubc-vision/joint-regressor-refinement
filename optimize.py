@@ -10,6 +10,7 @@ from tqdm import tqdm
 # from pose_refiner import Pose_Refiner
 from discriminator import Discriminator
 from renderer import Renderer
+from mesh_renderer import Mesh_Renderer
 # from pose_refiner_transformer import Pose_Refiner_Transformer
 
 # from train import find_joints, move_pelvis
@@ -47,9 +48,13 @@ from torch.nn import functional as F
 
 def find_joints(smpl, shape, orient, pose, J_regressor):
 
+    J_regressor_batch = nn.ReLU()(J_regressor)
+    J_regressor_batch = J_regressor_batch / torch.sum(J_regressor_batch, dim=1).unsqueeze(
+        1).expand(J_regressor_batch.shape)
+
     pred_vertices = smpl(global_orient=orient, body_pose=pose,
                          betas=shape, pose2rot=False).vertices
-    J_regressor_batch = J_regressor[None, :].expand(
+    J_regressor_batch = J_regressor_batch[None, :].expand(
         pred_vertices.shape[0], -1, -1).to(pred_vertices.device)
     pred_joints = torch.matmul(J_regressor_batch, pred_vertices)
 
@@ -60,9 +65,11 @@ def move_pelvis(j3ds):
     # move the hip location of gt to estimated
     pelvis = j3ds[:, [0], :].clone()
 
-    j3ds -= pelvis
+    j3ds_clone = j3ds.clone()
 
-    return j3ds
+    j3ds_clone -= pelvis
+
+    return j3ds_clone
 
 
 def optimize_pose_refiner():
@@ -90,7 +97,7 @@ def optimize_pose_refiner():
 
     raster_settings = PointsRasterizationSettings(
         image_size=224,
-        radius=0.03,
+        radius=0.04,
         points_per_pixel=10
     )
     raster_settings_img = PointsRasterizationSettings(
@@ -100,17 +107,15 @@ def optimize_pose_refiner():
     )
 
     img_renderer = Renderer()
+    # img_renderer = Mesh_Renderer()
     # img_renderer = nn.DataParallel(img_renderer)
 
     pose_discriminator = Discriminator().to(args.device)
-    checkpoint = torch.load(
-        "models/best_pose_refiner/pose_discriminator_100_iterations.pt", map_location=args.device)
     # checkpoint = torch.load(
-    #     "models/best_pose_refiner/pose_discriminator_10_iterations.pt", map_location=args.device)
-    pose_discriminator.load_state_dict(checkpoint)
-    # pose_discriminator = nn.DataParallel(pose_discriminator)
-    pose_discriminator.eval()
-    # pose_discriminator.train()
+    #     "models/pose_discriminator_epoch_0.pt", map_location=args.device)
+    # pose_discriminator.load_state_dict(checkpoint)
+    # pose_discriminator.eval()
+    pose_discriminator.train()
 
     disc_optimizer = optim.Adam(
         pose_discriminator.parameters(), lr=args.disc_learning_rate)
@@ -179,7 +184,11 @@ def optimize_pose_refiner():
             this_batch_optimizer = optim.Adam(
                 optimize_parameters, lr=1e-2)
 
+            import time
+
             for i in range(100):
+
+                this_time = time.time()
 
                 pred_rotmat_orient = rot6d_to_rotmat(
                     batch['orient'].reshape(-1, 6)).view(-1, 1, 3, 3)
@@ -193,13 +202,15 @@ def optimize_pose_refiner():
                 joint_loss = loss_function(move_pelvis(
                     pred_joints), batch['gt_j3d']/1000)
 
+                rendered_silhouette = img_renderer(
+                    batch, smpl, raster_settings)
                 # rendered_silhouette = img_renderer(
-                #     batch, smpl, raster_settings, colored=False)
+                #     batch, smpl)
 
-                # rendered_silhouette = torch.mean(
-                #     rendered_silhouette[:, :3], dim=1, keepdim=True)
-                # silhouette_loss = loss_function(
-                #     rendered_silhouette[batch["valid"]], batch["mask_rcnn"][batch["valid"]])
+                rendered_silhouette = rendered_silhouette[:, 3].unsqueeze(1)
+
+                silhouette_loss = loss_function(
+                    rendered_silhouette[batch["valid"]], batch["mask_rcnn"][batch["valid"]])
 
                 pred_disc = pose_discriminator(
                     torch.cat([batch['orient'], batch['pose']], dim=1))
@@ -207,32 +218,21 @@ def optimize_pose_refiner():
                 discriminated_loss = loss_function(pred_disc, torch.ones(
                     pred_disc.shape).to(args.device))
 
-                # opt_loss = silhouette_loss*100+joint_loss*10000+discriminated_loss*10
-                opt_loss = joint_loss*10000+discriminated_loss*10
-                # opt_loss = silhouette_loss*100+joint_loss*10000
+                opt_loss = silhouette_loss*100+joint_loss*10000+discriminated_loss*10
 
                 this_batch_optimizer.zero_grad()
                 opt_loss.backward()
                 this_batch_optimizer.step()
 
-                # print(i)
-                # print("silhouette_loss.item()")
-                # print(silhouette_loss.item())
-                # print("joint_loss.item()")
-                # print(joint_loss.item())
-                # print("discriminated_loss.item()")
-                # print(discriminated_loss.item())
-                # print()
-
-            # pred_gt = pose_discriminator(spin_pred_pose)
-            # pred_disc = pose_discriminator(
-            #     torch.cat([batch['orient'], batch['pose']], dim=1).detach())
-            # discriminator_loss = loss_function(pred_disc, torch.zeros(
-            #     pred_disc.shape).to(args.device))+loss_function(pred_gt, torch.ones(
-            #         pred_disc.shape).to(args.device))
-            # disc_optimizer.zero_grad()
-            # discriminator_loss.backward()
-            # disc_optimizer.step()
+            pred_gt = pose_discriminator(spin_pred_pose)
+            pred_disc = pose_discriminator(
+                torch.cat([batch['orient'], batch['pose']], dim=1).detach())
+            discriminator_loss = loss_function(pred_disc, torch.zeros(
+                pred_disc.shape).to(args.device))+loss_function(pred_gt, torch.ones(
+                    pred_disc.shape).to(args.device))
+            disc_optimizer.zero_grad()
+            discriminator_loss.backward()
+            disc_optimizer.step()
 
             # get the joints from the joint regressor retrained
             # get error to gt
@@ -246,26 +246,21 @@ def optimize_pose_refiner():
             j_regressor_error.backward()
             J_Regressor_optimizer.step()
 
-            with torch.no_grad():
-                J_regressor_retrained = nn.ReLU()(J_regressor_retrained)
-                J_regressor_retrained = J_regressor_retrained / \
-                    torch.sum(J_regressor_retrained, dim=1).unsqueeze(
-                        1).expand(J_regressor_retrained.shape)
-
             if(args.wandb_log):
                 wandb.log(
                     {
                         "silhouette_loss": silhouette_loss.item(),
                         "joint_loss": joint_loss.item(),
                         "discriminated_loss": discriminated_loss.item(),
-                        # "discriminator_loss": discriminator_loss.item(),
+                        "discriminator_loss": discriminator_loss.item(),
                         "j_regressor_error": j_regressor_error.item(),
                     })
 
             # rendered_img = img_renderer(
-            #     batch, smpl, raster_settings_img, colored=False)
+            #     batch, smpl, raster_settings_img, subset=False, colored=False)
 
-            # drawing = (rendered_img[:, :3]*.5+batch['image']*.5)
+            # drawing = (rendered_img[:, 3].unsqueeze(1).expand(
+            #     batch['image'].shape)+batch['image']*.5)
 
             # blt = utils.torch_img_to_np_img(drawing)
 

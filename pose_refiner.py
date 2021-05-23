@@ -23,31 +23,23 @@ from pytorch3d.renderer import look_at_view_transform, PerspectiveCameras, Point
 from utils import utils
 
 
-class MyGroupNorm(nn.Module):
-    def __init__(self, num_channels):
-        super(MyGroupNorm, self).__init__()
-        self.norm = nn.GroupNorm(num_groups=32, num_channels=num_channels,
-                                 eps=1e-5, affine=True)
-
-    def forward(self, x):
-        x = self.norm(x)
-        return x
-
-
-class Render_Model(nn.Module):
+class Pose_Refiner(nn.Module):
     # def __init__(self, num_inputs, num_joints):
     def __init__(self):
-        super(Render_Model, self).__init__()
+        super(Pose_Refiner, self).__init__()
 
         self.num_inputs = 512
         self.num_joints = len(constants.GT_2_J17)
         self.num_units_per_joint = 10
 
-        self.resnet = getattr(models, "resnet18")(pretrained=True)
-        # self.resnet = nn.Sequential(
-        #     *list(self.resnet.children())[:3], *list(self.resnet.children())[4:-2])
+        self.resnet = getattr(models, "resnet50")
         self.resnet = nn.Sequential(
-            *list(self.resnet.children())[:-1])
+            *list(self.resnet.children())[:3], *list(self.resnet.children())[4:-2])
+
+        print(self.resnet)
+        exit()
+        # self.resnet = nn.Sequential(
+        #     *list(self.resnet.children())[:-1])
 
         self.linear_operations = nn.Sequential(
             nn.Linear(self.num_inputs, 512),

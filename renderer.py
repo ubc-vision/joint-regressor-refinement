@@ -30,7 +30,15 @@ class Renderer(nn.Module):
     def __init__(self):
         super(Renderer, self).__init__()
 
-    def forward(self, batch, smpl, raster_settings, colored=True):
+        self.sorted_indices = np.load("data/body_model/sorted_indices.npy")
+        self.sorted_indices = torch.tensor(
+            self.sorted_indices, dtype=torch.long).to(args.device)[:, 0]
+
+    def forward(self, batch, smpl, raster_settings, subset=True, colored=True):
+
+        # import time
+
+        # start_time = time.time()
 
         focal_length = torch.stack(
             [batch['intrinsics'][:, 0, 0]/224, batch['intrinsics'][:, 1, 1]/224], dim=1).to(args.device)
@@ -48,6 +56,10 @@ class Renderer(nn.Module):
         point_cloud = smpl(betas=batch['betas'], body_pose=pose,
                            global_orient=orient, pose2rot=False).vertices
 
+        if(subset):
+            idx = self.sorted_indices[-700:]
+            point_cloud = point_cloud[:, idx]
+
         cameras = PerspectiveCameras(device=args.device, T=batch['cam'],
                                      focal_length=focal_length, principal_point=principal_point)
 
@@ -61,8 +73,12 @@ class Renderer(nn.Module):
         point_cloud[:, :, 0] *= -1
         point_cloud *= 2
 
-        pred_joints_2d = cameras.transform_points_screen(
-            point_cloud, image_size)
+        # pred_joints[:, :, 1] *= -1
+        # pred_joints[:, :, 0] *= -1
+        # pred_joints *= 2
+
+        # pred_joints_2d = cameras.transform_points_screen(
+        #     pred_joints, image_size)
 
         this_point_cloud = Pointclouds(points=point_cloud, features=feat)
 
@@ -73,14 +89,8 @@ class Renderer(nn.Module):
             rasterizer=rasterizer,
             compositor=AlphaCompositor()
         )
-        # renderer = nn.DataParallel(renderer)
 
         rendered_image = renderer(this_point_cloud)
-
-        # final_image = (rendered_image.permute(0, 3, 1, 2)
-        #                [:, :3]*.5+batch['image']*.5)
-
-        # final_image = normalize(final_image)
 
         return rendered_image.permute(0, 3, 1, 2)
 
