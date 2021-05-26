@@ -30,10 +30,11 @@ class Pose_Refiner(nn.Module):
     def __init__(self):
         super(Pose_Refiner, self).__init__()
 
-        self.num_inputs = 2048
+        self.num_inputs = 512
         self.num_joints = 24*6
 
-        self.resnet = getattr(models, "resnet50")(pretrained=True)
+        self.resnet = getattr(models, "resnet18")(pretrained=True)
+        # self.resnet = getattr(models, "resnet50")(pretrained=True)
 
         self.conv1 = nn.Conv2d(6, 64, kernel_size=(
             7, 7), stride=(2, 2), padding=(3, 3), bias=False)
@@ -87,11 +88,15 @@ class Pose_Refiner(nn.Module):
         output = self.conv1(final_image)
         output = self.bn1(output)
 
+        output = nn.ReLU(inplace=True)(output)
+
         output = self.resnet(output)
 
         output = output.reshape(-1, self.num_inputs)
 
         output = self.linear_1(output)
+
+        output = nn.ReLU(inplace=True)(output)
 
         output = torch.cat(
             [output, batch["orient"].reshape(-1, 1*6), batch["pose"].reshape(-1, 23*6), batch["betas"], batch["cam"]], dim=1)

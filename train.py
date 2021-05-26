@@ -26,69 +26,11 @@ import pytorch3d
 from pytorch3d.structures import Pointclouds
 from pytorch3d.renderer import look_at_view_transform, PerspectiveCameras, PointsRasterizationSettings, PointsRasterizer, AlphaCompositor, PointsRenderer
 
+from utils import utils
+
 from eval_utils import batch_compute_similarity_transform_torch
 
 from SPIN.utils.geometry import rot6d_to_rotmat
-
-
-def evaluate(pred_j3ds, target_j3ds):
-
-    with torch.no_grad():
-
-        pred_j3ds = pred_j3ds.clone().detach()
-        target_j3ds = target_j3ds.clone().detach()
-        target_j3ds /= 1000
-
-        # print(f'Evaluating on {pred_j3ds.shape[0]} number of poses...')
-        pred_pelvis = pred_j3ds[:, [0], :].clone()
-        target_pelvis = target_j3ds[:, [0], :].clone()
-
-        pred_j3ds -= pred_pelvis
-        target_j3ds -= target_pelvis
-
-        # Absolute error (MPJPE)
-        errors = torch.sqrt(((pred_j3ds - target_j3ds) **
-                             2).sum(dim=-1)).mean(dim=-1).cpu().numpy()
-        S1_hat = batch_compute_similarity_transform_torch(
-            pred_j3ds, target_j3ds)
-        errors_pa = torch.sqrt(
-            ((S1_hat - target_j3ds) ** 2).sum(dim=-1)).mean(dim=-1).cpu().numpy()
-
-        m2mm = 1000
-
-        mpjpe = np.mean(errors) * m2mm
-        pa_mpjpe = np.mean(errors_pa) * m2mm
-
-        eval_dict = {
-            'mpjpe': mpjpe,
-            'pa-mpjpe': pa_mpjpe,
-        }
-
-        # log_str = ' '.join(
-        #     [f'{k.upper()}: {v:.4f},'for k, v in eval_dict.items()])
-        # print(log_str)
-
-    return mpjpe, pa_mpjpe
-
-
-def find_joints(smpl, shape, orient, pose, J_regressor):
-
-    pred_vertices = smpl(global_orient=orient, body_pose=pose,
-                         betas=shape, pose2rot=False).vertices
-    J_regressor_batch = J_regressor[None, :].expand(
-        pred_vertices.shape[0], -1, -1).to(pred_vertices.device)
-    pred_joints = torch.matmul(J_regressor_batch, pred_vertices)
-
-    return pred_joints
-
-
-def move_pelvis(j3ds):
-    # move the hip location of gt to estimated
-    pelvis = j3ds[:, [0], :].clone()
-
-    j3ds -= pelvis
-
-    return j3ds
 
 
 def train_pose_refiner_model():
@@ -104,16 +46,17 @@ def train_pose_refiner_model():
         batch_size=1,
     ).to(args.device)
 
-    J_regressor = torch.from_numpy(
-        np.load('SPIN/data/J_regressor_h36m.npy')).float().to(args.device)
+    J_regressor = torch.load('models/best_pose_refiner/j_regressor.pt')[0].to(args.device)
 
-    img_renderer = Renderer(subset=True)
+    silhouette_renderer = Renderer(subset=True)
+    img_renderer = Renderer(subset=False)
 
     pose_refiner = Pose_Refiner().to(args.device)
-    # checkpoint = torch.load(
-    #     "models/best_pose_refiner/gt_intrinsics_maskrcnn.pt", map_location=args.device)
-    # pose_refiner.load_state_dict(checkpoint)
+    checkpoint = torch.load(
+        "models/pose_refiner_epoch_6.pt", map_location=args.device)
+    pose_refiner.load_state_dict(checkpoint)
     pose_refiner.train()
+    # pose_refiner.eval()
     # print("model load worked succesfully")
     # exit()
     pose_discriminator = Discriminator().to(args.device)
@@ -125,7 +68,7 @@ def train_pose_refiner_model():
     optimizer = optim.Adam(
         pose_refiner.parameters(), lr=args.learning_rate)
     disc_optimizer = optim.Adam(
-        pose_discriminator.parameters(), lr=args.learning_rate)
+        pose_discriminator.parameters(), lr=args.disc_learning_rate)
 
     loss_function = nn.MSELoss()
 
@@ -149,7 +92,10 @@ def train_pose_refiner_model():
 
         for iteration in tqdm(range(len(loader))):
 
-            batch = next(iterator)
+            try:
+                batch = next(iterator)
+            except:
+                continue
 
             for item in batch:
                 if(item != "valid" and item != "path" and item != "pixel_annotations"):
@@ -157,7 +103,7 @@ def train_pose_refiner_model():
 
             # train generator
 
-            batch['gt_j3d'] = move_pelvis(batch['gt_j3d'])
+            batch['gt_j3d'] = utils.move_pelvis(batch['gt_j3d'])
 
             spin_image = normalize(batch['image'])
 
@@ -172,41 +118,47 @@ def train_pose_refiner_model():
 
             pred_rotmat = rot6d_to_rotmat(spin_pred_pose).view(-1, 24, 3, 3)
 
+            batch["orient"] = spin_pred_pose[:, :1]
             batch["pose"] = spin_pred_pose[:, 1:]
-            batch["orient"] = spin_pred_pose[:, 0].unsqueeze(1)
             batch["betas"] = pred_betas
 
-            pred_joints = find_joints(
+            # utils.render_batch(img_renderer, batch, "initial")
+
+            pred_joints = utils.find_joints(
                 smpl, batch["betas"], pred_rotmat[:, 0].unsqueeze(1), pred_rotmat[:, 1:], J_regressor)
 
-            mpjpe_before_refinement, pampjpe_before_refinement = evaluate(
+            mpjpe_before_refinement, pampjpe_before_refinement = utils.evaluate(
                 pred_joints, batch['gt_j3d'])
 
             est_pose, est_betas, est_cam = pose_refiner(batch)
 
+            batch["orient"] = est_pose[:, :1]
+            batch["pose"] = est_pose[:, 1:]
             batch["betas"] = est_betas
             batch["cam"] = est_cam
 
+            # utils.render_batch(img_renderer, batch, "refined")
+            # exit()
+
             pred_rotmat = rot6d_to_rotmat(est_pose).view(-1, 24, 3, 3)
 
-            pred_joints = find_joints(
+            pred_joints = utils.find_joints(
                 smpl, batch["betas"], pred_rotmat[:, :1], pred_rotmat[:, 1:], J_regressor)
 
-            pred_joints = move_pelvis(pred_joints)
+            pred_joints = utils.move_pelvis(pred_joints)
 
-            mpjpe_after, pampjpe_after = evaluate(
+            mpjpe_after, pampjpe_after = utils.evaluate(
                 pred_joints, batch['gt_j3d'])
 
             joint_loss = loss_function(pred_joints, batch['gt_j3d']/1000)
 
             # add a loss so the estimates dont stray too far from original
-            pred_disc = pose_discriminator(
-                torch.cat([batch["orient"], batch["pose"]], dim=1))
+            pred_disc = pose_discriminator(est_pose)
 
             discriminated_loss = loss_function(pred_disc, torch.ones(
                 pred_disc.shape).to(args.device))
 
-            rendered_silhouette = img_renderer(batch)
+            rendered_silhouette = silhouette_renderer(batch)
 
             rendered_silhouette = rendered_silhouette[:, 3].unsqueeze(1)
 
@@ -218,6 +170,16 @@ def train_pose_refiner_model():
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
+
+            # exit()
+
+            # print("joint_loss.item()")
+            # print(joint_loss.item())
+            # print("discriminated_loss.item()")
+            # print(discriminated_loss.item()/1000)
+            # print("silhouette_loss.item()")
+            # print(silhouette_loss.item()/100)
+            # exit()
 
             # train discriminator
 
@@ -276,10 +238,10 @@ def train_pose_refiner_model():
                     batch["orient"] = spin_pred_pose[:, 0].unsqueeze(1)
                     batch["betas"] = pred_betas
 
-                    pred_joints = find_joints(
+                    pred_joints = utils.find_joints(
                         smpl, batch["betas"], pred_rotmat[:, 0].unsqueeze(1), pred_rotmat[:, 1:], J_regressor)
 
-                    mpjpe_before_refinement, pampjpe_before_refinement = evaluate(
+                    mpjpe_before_refinement, pampjpe_before_refinement = utils.evaluate(
                         pred_joints, batch['gt_j3d'])
 
                     est_pose, est_betas, est_cam = pose_refiner(batch)
@@ -289,12 +251,12 @@ def train_pose_refiner_model():
 
                     pred_rotmat = rot6d_to_rotmat(est_pose).view(-1, 24, 3, 3)
 
-                    pred_joints = find_joints(
+                    pred_joints = utils.find_joints(
                         smpl, batch["betas"], pred_rotmat[:, :1], pred_rotmat[:, 1:], J_regressor)
 
-                    pred_joints = move_pelvis(pred_joints)
+                    pred_joints = utils.move_pelvis(pred_joints)
 
-                    mpjpe_after, pampjpe_after = evaluate(
+                    mpjpe_after, pampjpe_after = utils.evaluate(
                         pred_joints, batch['gt_j3d'])
 
                     pose_refiner.train()
@@ -312,3 +274,155 @@ def train_pose_refiner_model():
 
         torch.save(pose_refiner.state_dict(),
                    f"models/pose_refiner_epoch_{epoch}.pt")
+
+
+def train_joint_regressor():
+
+    spin_model = hmr(config.SMPL_MEAN_PARAMS).to(args.device)
+    checkpoint = torch.load(
+        "SPIN/data/model_checkpoint.pt", map_location=args.device)
+    spin_model.load_state_dict(checkpoint['model'], strict=False)
+    spin_model.eval()
+
+    smpl = SMPL(
+        '{}'.format("SPIN/data/smpl"),
+        batch_size=1,
+    ).to(args.device)
+
+    J_regressor = torch.from_numpy(
+        np.load('SPIN/data/J_regressor_h36m.npy')).float().to(args.device)
+
+    J_regressor.requires_grad = True
+
+    j_reg_mask = utils.find_j_reg_mask(J_regressor)
+
+    pose_refiner = Pose_Refiner().to(args.device)
+    checkpoint = torch.load(
+        "models/pose_refiner_epoch_6.pt", map_location=args.device)
+    pose_refiner.load_state_dict(checkpoint)
+    pose_refiner.eval()
+
+    loss_function = nn.MSELoss()
+
+    img_renderer = Renderer(subset=False)
+
+    data = data_set("train")
+    val_data = data_set("validation")
+
+    loader = torch.utils.data.DataLoader(
+        data, batch_size=args.batch_size, num_workers=4, pin_memory=True, shuffle=True, drop_last=True)
+    val_loader = torch.utils.data.DataLoader(
+        val_data, batch_size=args.batch_size, num_workers=4, pin_memory=True, shuffle=True, drop_last=True)
+
+    normalize = transforms.Normalize(
+        (0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
+
+    optimizer = optim.Adam([J_regressor], lr=args.j_reg_lr)
+
+    total_loss = 0
+
+    for epoch in range(5):
+
+        iterator = iter(loader)
+        val_iterator = iter(val_loader)
+
+        for iteration in tqdm(range(len(loader))):
+
+            try:
+                batch = next(iterator)
+            except:
+                continue
+
+            for item in batch:
+                if(item != "valid" and item != "path" and item != "pixel_annotations"):
+                    batch[item] = batch[item].to(args.device).float()
+
+            # train generator
+
+            batch['gt_j3d'] = utils.move_pelvis(batch['gt_j3d'])
+
+            spin_image = normalize(batch['image'])
+
+            with torch.no_grad():
+                spin_pred_pose, pred_betas, pred_camera = spin_model(
+                    spin_image)
+
+            pred_rotmat = rot6d_to_rotmat(spin_pred_pose).view(-1, 24, 3, 3)
+
+            batch["orient"] = spin_pred_pose[:, :1]
+            batch["pose"] = spin_pred_pose[:, 1:]
+            batch["betas"] = pred_betas
+
+            pred_joints = utils.find_joints(
+                smpl, batch["betas"], pred_rotmat[:, 0].unsqueeze(1), pred_rotmat[:, 1:], J_regressor, mask=j_reg_mask)
+
+            est_pose, est_betas, est_cam = pose_refiner(batch)
+
+            batch["orient"] = est_pose[:, :1]
+            batch["pose"] = est_pose[:, 1:]
+            batch["betas"] = est_betas
+            batch["cam"] = est_cam
+
+            pred_rotmat = rot6d_to_rotmat(est_pose).view(-1, 24, 3, 3)
+
+            pred_joints = utils.find_joints(
+                smpl, batch["betas"], pred_rotmat[:, :1], pred_rotmat[:, 1:], J_regressor, mask=j_reg_mask)
+
+            pred_joints = utils.move_pelvis(pred_joints)
+
+            loss = loss_function(pred_joints, batch["gt_j3d"]/1000)
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            if(args.wandb_log):
+                wandb.log({"loss": loss.item()})
+
+            if(args.wandb_log and iteration % 100 == 0):
+
+                with torch.no_grad():
+                    batch = next(val_iterator)
+
+                    for item in batch:
+
+                        if(item != "valid" and item != "path" and item != "pixel_annotations"):
+                            batch[item] = batch[item].to(args.device).float()
+
+                    batch['gt_j3d'] = utils.move_pelvis(batch['gt_j3d'])
+
+                    spin_image = normalize(batch['image'])
+
+                    spin_pred_pose, pred_betas, pred_camera = spin_model(
+                        spin_image)
+
+                    pred_rotmat = rot6d_to_rotmat(
+                        spin_pred_pose).view(-1, 24, 3, 3)
+
+                    batch["orient"] = spin_pred_pose[:, :1]
+                    batch["pose"] = spin_pred_pose[:, 1:]
+                    batch["betas"] = pred_betas
+
+                    pred_joints = utils.find_joints(
+                        smpl, batch["betas"], pred_rotmat[:, 0].unsqueeze(1), pred_rotmat[:, 1:], J_regressor)
+
+                    est_pose, est_betas, est_cam = pose_refiner(batch)
+
+                    batch["orient"] = est_pose[:, :1]
+                    batch["pose"] = est_pose[:, 1:]
+                    batch["betas"] = est_betas
+                    batch["cam"] = est_cam
+
+                    pred_rotmat = rot6d_to_rotmat(est_pose).view(-1, 24, 3, 3)
+
+                    pred_joints = utils.find_joints(
+                        smpl, batch["betas"], pred_rotmat[:, :1], pred_rotmat[:, 1:], J_regressor)
+
+                    pred_joints = utils.move_pelvis(pred_joints)
+
+                    loss = loss_function(pred_joints, batch["gt_j3d"]/1000)
+
+                    wandb.log({"val_loss": loss.item()})
+
+        torch.save(J_regressor,
+                   f"models/j_regressor_epoch_{epoch}.pt")

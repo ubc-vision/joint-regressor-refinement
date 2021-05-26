@@ -3,8 +3,6 @@ from torch import nn, optim
 
 import os
 
-from eval_utils import batch_compute_similarity_transform_torch
-
 from utils import utils
 
 from tqdm import tqdm
@@ -21,11 +19,12 @@ from torchvision import transforms
 
 from warp import perturbation_helper, sampling_helper
 
-from create_smpl_gt import find_crop, rotation_matrix_to_quaternion, quaternion_to_rotation_matrix, find_joints
+# from create_smpl_gt import find_crop, rotation_matrix_to_quaternion, quaternion_to_rotation_matrix, find_joints
 
 import copy
 
-from train import find_pose_add_noise
+from pose_refiner import Pose_Refiner
+from renderer import Renderer, return_2d_joints
 
 
 # SPIN
@@ -36,154 +35,7 @@ import SPIN.config as config
 from SPIN.utils.geometry import rot6d_to_rotmat
 
 
-def evaluate(pred_j3ds, target_j3ds):
-
-    with torch.no_grad():
-
-        pred_j3ds = pred_j3ds.clone().detach()
-        target_j3ds = target_j3ds.clone().detach()
-        target_j3ds /= 1000
-
-        # print(f'Evaluating on {pred_j3ds.shape[0]} number of poses...')
-        pred_pelvis = (pred_j3ds[:, [2], :] + pred_j3ds[:, [3], :]) / 2.0
-        target_pelvis = (target_j3ds[:, [2], :] + target_j3ds[:, [3], :]) / 2.0
-
-        pred_j3ds -= pred_pelvis
-        target_j3ds -= target_pelvis
-
-        # Absolute error (MPJPE)
-        errors = torch.sqrt(((pred_j3ds - target_j3ds) **
-                             2).sum(dim=-1)).mean(dim=-1).cpu().numpy()
-        S1_hat = batch_compute_similarity_transform_torch(
-            pred_j3ds, target_j3ds)
-        errors_pa = torch.sqrt(
-            ((S1_hat - target_j3ds) ** 2).sum(dim=-1)).mean(dim=-1).cpu().numpy()
-
-        m2mm = 1000
-
-        mpjpe = np.mean(errors) * m2mm
-        pa_mpjpe = np.mean(errors_pa) * m2mm
-
-        eval_dict = {
-            'mpjpe': mpjpe,
-            'pa-mpjpe': pa_mpjpe,
-        }
-
-        log_str = ' '.join(
-            [f'{k.upper()}: {v:.4f},'for k, v in eval_dict.items()])
-        print(log_str)
-
-    return mpjpe, pa_mpjpe
-
-
-# # find crop and pass in 224x224 image
-# def find_crop(image, joints_2d):
-
-#     batch_size = joints_2d.shape[0]
-#     min_x = torch.min(joints_2d[..., 0], dim=1)[0]
-#     max_x = torch.max(joints_2d[..., 0], dim=1)[0]
-#     min_y = torch.min(joints_2d[..., 1], dim=1)[0]
-#     max_y = torch.max(joints_2d[..., 1], dim=1)[0]
-
-#     min_x = (min_x-500)/500
-#     max_x = (max_x-500)/500
-#     min_y = (min_y-500)/500
-#     max_y = (max_y-500)/500
-
-#     average_x = (min_x+max_x)/2
-#     average_y = (min_y+max_y)/2
-
-#     scale_x = (max_x-min_x)*1.2
-#     scale_y = (max_y-min_y)*1.2
-
-#     scale = torch.where(scale_x > scale_y, scale_x, scale_y)
-
-#     # print(scale[:3])
-#     # print(average_x[:3])
-
-#     scale /= 2
-
-#     min_x = (average_x-scale)*500+500
-#     min_y = (average_y-scale)*500+500
-
-#     zeros = torch.zeros(batch_size).to(args.device)
-#     ones = torch.ones(batch_size).to(args.device)
-
-#     bilinear_sampler = sampling_helper.DifferentiableImageSampler(
-#         'bilinear', 'zeros')
-
-#     vec = torch.stack([zeros, scale, scale, average_x /
-#                        scale, average_y/scale], dim=1)
-
-#     transformation_mat = perturbation_helper.vec2mat_for_similarity(vec)
-
-#     image = bilinear_sampler.warp_image(
-#         image, transformation_mat, out_shape=[224, 224]).contiguous()
-
-#     return image, min_x, min_y, scale
-
-
-def convert_back_to_original_dimensions(image, pred_joints, pred_camera, min_x, min_y, image_scale):
-
-    camera_translation = torch.stack(
-        [pred_camera[:, 1], pred_camera[:, 2], 2*5000/(112 * pred_camera[:, 0] + 1e-9)], dim=-1)
-
-    camera_translation = camera_translation.unsqueeze(
-        1).expand(pred_joints.shape[0], pred_joints.shape[1], 3)
-
-    camera_scale = pred_camera[:,
-                               0].unsqueeze(-1).unsqueeze(-1).expand(pred_joints.shape)
-
-    image_scale = image_scale.unsqueeze(
-        -1).unsqueeze(-1).expand(pred_joints.shape)
-
-    pred_joints += camera_translation
-
-    pred_joints *= camera_scale
-    pred_joints *= 112
-    pred_joints += 112
-
-    pred_joints = pred_joints*1000/224*image_scale
-
-    pred_joints[:, :, 0] += min_x.unsqueeze(-1).expand(pred_joints.shape[:-1])
-    pred_joints[:, :, 1] += min_y.unsqueeze(-1).expand(pred_joints.shape[:-1])
-
-    # return pred_joints, camera_scale*112*1000/224*image_scale
-    return pred_joints, camera_scale*112*1000/224*image_scale
-
-
-# use ground truth crop on image
-def spin_estimate_vertices(spin_model, batch, smpl, J_regressor):
-
-    # get the crop for the image
-    image, _, _, _, _ = find_crop(
-        batch['image'], batch['gt_j2d'], batch['intrinsics'])
-
-    pred_rotmat, pred_betas, pred_camera = spin_model(image)
-
-    # get back into crop space
-    # then back into original image space
-
-    pred_joints = smpl(betas=pred_betas, body_pose=pred_rotmat[:, 1:], global_orient=pred_rotmat[:, 0].unsqueeze(
-        1), pose2rot=False).vertices
-    J_regressor_batch = J_regressor[None, :].expand(
-        pred_joints.shape[0], -1, -1).to(args.device)
-    pred_joints = torch.matmul(J_regressor_batch, pred_joints)
-
-    return pred_joints
-
-
-def test_render_model(model):
-    model.eval()
-
-    J_regressor = torch.from_numpy(
-        np.load('SPIN/data/J_regressor_h36m.npy')).float().to(args.device)
-
-    smpl = SMPL(
-        '{}'.format("SPIN/data/smpl"),
-        batch_size=args.optimization_batch_size,
-        # joint_type="cocoplus"
-    ).to(args.device)
+def test_pose_refiner_model():
 
     spin_model = hmr(config.SMPL_MEAN_PARAMS).to(args.device)
     checkpoint = torch.load(
@@ -191,193 +43,146 @@ def test_render_model(model):
     spin_model.load_state_dict(checkpoint['model'], strict=False)
     spin_model.eval()
 
-    data_dict = load_data("validation")
+    smpl = SMPL(
+        '{}'.format("SPIN/data/smpl"),
+        batch_size=1,
+    ).to(args.device)
 
-    mse_loss = nn.MSELoss()
+    # J_regressor = torch.from_numpy(
+    #     np.load('SPIN/data/J_regressor_h36m.npy')).float().to(args.device)
+    J_regressor = torch.load(
+        'models/best_pose_refiner/j_regressor.pt')[0].to(args.device)
+
+    # new_J_regressor = torch.load(
+    #     'models/j_regressor_epoch_0.pt')[0].to(args.device)
+
+    pose_refiner = Pose_Refiner().to(args.device)
+    checkpoint = torch.load(
+        "models/pose_refiner_epoch_0.pt", map_location=args.device)
+    pose_refiner.load_state_dict(checkpoint)
+    pose_refiner.eval()
+
+    for param in pose_refiner.resnet.parameters():
+        param.requires_grad = False
+
+    loss_function = nn.MSELoss()
+
+    img_renderer = Renderer(subset=False)
+
+    data = data_set("validation")
+    # data = data_set("train")
+
+    loader = torch.utils.data.DataLoader(
+        data, batch_size=args.batch_size, num_workers=4, pin_memory=True, shuffle=True, drop_last=True)
 
     normalize = transforms.Normalize(
         (0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
 
-    this_data_set = data_set(data_dict)
+    mpjpe_before = []
+    pampjpe_before = []
+    mpjpe_after = []
+    pampjpe_after = []
+    mpjpe_after_j_reg = []
+    pampjpe_after_j_reg = []
 
-    loader = torch.utils.data.DataLoader(
-        this_data_set, batch_size=args.optimization_batch_size, num_workers=0, shuffle=True)
+    total_loss = 0
+
     iterator = iter(loader)
 
-    before_mpjpe = []
-    before_pa_mpjpe = []
-    after_mpjpe = []
-    after_pa_mpjpe = []
+    for iteration in tqdm(range(len(loader))):
 
-    for iteration in tqdm(range(len(iterator))):
-
-        batch = next(iterator)
+        try:
+            batch = next(iterator)
+        except:
+            continue
 
         for item in batch:
-            batch[item] = batch[item].to(args.device).float()
+            if(item != "valid" and item != "path" and item != "pixel_annotations"):
+                batch[item] = batch[item].to(args.device).float()
 
-        batch_augmented = find_pose_add_noise(
-            normalize, spin_model, smpl, J_regressor, batch)
+        # train generator
 
-        pred_pose_quat = batch_augmented['pose_initial']
-        pred_orient_quat = batch_augmented['orient_initial']
+        batch['gt_j3d'] = utils.move_pelvis(batch['gt_j3d'])
 
-        optimizer = optim.SGD(
-            [pred_pose_quat, pred_orient_quat], lr=args.optimization_rate)
+        spin_image = normalize(batch['image'])
 
-        for i in range(args.opt_steps):
+        with torch.no_grad():
+            spin_pred_pose, pred_betas, pred_camera = spin_model(
+                spin_image)
 
-            optimizer.zero_grad()
+        # pred_cam_t = torch.stack([-2*pred_camera[:, 1],
+        #                           -2*pred_camera[:, 2],
+        #                           2*5000/(224 * pred_camera[:, 0] + 1e-9)], dim=-1)
+        # batch["cam"] = pred_cam_t
 
-            pred_joints = find_joints(smpl, batch_augmented['pred_betas'], pred_orient_quat,
-                                      pred_pose_quat, J_regressor)
+        pred_rotmat = rot6d_to_rotmat(spin_pred_pose).view(-1, 24, 3, 3)
 
-            if(i == 0):
-                print("before")
-                mpjpe, pa_mpjpe = evaluate(pred_joints, batch['gt_j3d'])
+        batch["orient"] = spin_pred_pose[:, :1]
+        batch["pose"] = spin_pred_pose[:, 1:]
+        batch["betas"] = pred_betas
 
-                before_mpjpe.append(mpjpe)
-                before_pa_mpjpe.append(pa_mpjpe)
+        # utils.render_batch(img_renderer, batch, "initial")
 
-            batch_augmented['orient'] = quaternion_to_rotation_matrix(
-                pred_orient_quat.reshape(-1, 4)).reshape(-1, 1, 3, 3)
-            batch_augmented['pose'] = quaternion_to_rotation_matrix(
-                pred_pose_quat.reshape(-1, 4)).reshape(-1, 23, 3, 3)
+        pred_joints = utils.find_joints(
+            smpl, batch["betas"], pred_rotmat[:, 0].unsqueeze(1), pred_rotmat[:, 1:], J_regressor)
 
-            estimated_loss = model.forward(batch_augmented)
+        mpjpe_before_refinement, pampjpe_before_refinement = utils.evaluate(
+            pred_joints, batch['gt_j3d'])
 
-            estimated_loss = torch.mean(estimated_loss)
+        mpjpe_before.append(torch.tensor(mpjpe_before_refinement))
+        pampjpe_before.append(torch.tensor(pampjpe_before_refinement))
 
-            print(f"estimated loss {estimated_loss.item()}")
+        est_pose, est_betas, est_cam = pose_refiner(batch)
 
-            estimated_loss.backward()
+        batch["orient"] = est_pose[:, :1]
+        batch["pose"] = est_pose[:, 1:]
+        batch["betas"] = est_betas
+        batch["cam"] = est_cam
 
-            optimizer.step()
-            print(f"{i}")
+        pred_rotmat = rot6d_to_rotmat(est_pose).view(-1, 24, 3, 3)
 
-            # if(i%10==0):
-            # batch['estimated_j3d'] = optimized_joints
-            mpjpe, pampjpe = evaluate(pred_joints, batch['gt_j3d'])
+        pred_joints = utils.find_joints(
+            smpl, batch["betas"], pred_rotmat[:, :1], pred_rotmat[:, 1:], J_regressor)
 
-            # mpjpe_errors[int(i/10)]+= mpjpe
-            # pampjpe_errors[int(i/10)]+= pampjpe
+        # joints_2d = return_2d_joints(batch, smpl, J_regressor=J_regressor)
 
-            # print("best")
-            # evaluate(best_poses, batch['gt_j3d'])
-            # print(f"loss {estimated_loss.item()}, iteration {i}")
-        mpjpe, pa_mpjpe = evaluate(pred_joints, batch['gt_j3d'])
+        # utils.render_batch(img_renderer, batch, "reg_0", joints_2d)
 
-        after_mpjpe.append(mpjpe)
-        after_pa_mpjpe.append(pa_mpjpe)
+        pred_joints = utils.move_pelvis(pred_joints)
 
-        print(f"before_mpjpe: {torch.mean(torch.tensor(before_mpjpe))}")
-        print(f"before_pa_mpjpe: {torch.mean(torch.tensor(before_pa_mpjpe))}")
-        print(f"after_mpjpe: {torch.mean(torch.tensor(after_mpjpe))}")
-        print(f"after_pa_mpjpe: {torch.mean(torch.tensor(after_pa_mpjpe))}")
+        mpjpe_after_refinement, pampjpe_after_refinement = utils.evaluate(
+            pred_joints, batch['gt_j3d'])
 
-        # print("after")
-        # evaluate(batch['estimated_j3d'], batch['gt_j3d'])
+        mpjpe_after.append(torch.tensor(mpjpe_after_refinement))
+        pampjpe_after.append(torch.tensor(pampjpe_after_refinement))
 
-        # estimated_j3d[batch['indices']] = batch['estimated_j3d'].cpu().detach()
+        # verify new joint regressor
+        # pred_joints = utils.find_joints(
+        #     smpl, batch["betas"], pred_rotmat[:, :1], pred_rotmat[:, 1:], new_J_regressor)
 
-        # print("initial j3d")
-        # print(evaluate(initial_j3d, data_dict['gt_j3d']))
+        # joints_2d = return_2d_joints(batch, smpl, J_regressor=new_J_regressor)
 
-        # print("mpjpe")
-        # print(np.array(mpjpe_errors)/(iteration+1))
-        # print("pa mpjpe")
-        # print(np.array(pampjpe_errors)/(iteration+1))
-
-        # wandb_viz(batch, "optimized", estimated_loss_per_pose[0].item(), smpl)
-
+        # utils.render_batch(img_renderer, batch, "reg_1", joints_2d)
         # exit()
 
-        # return the error
+        pred_joints = utils.move_pelvis(pred_joints)
 
-    print("initial j3d")
-    print(evaluate(initial_j3d, data_dict['gt_j3d']))
+        mpjpe_after_refinement_j_reg, pampjpe_after_refinement_j_reg = utils.evaluate(
+            pred_joints, batch['gt_j3d'])
 
-    print("mpjpe")
-    print(mpjpe_errors/len(iterator))
-    print("pa mpjpe")
-    print(pampjpe_errors/len(iterator))
+        mpjpe_after_j_reg.append(torch.tensor(mpjpe_after_refinement_j_reg))
+        pampjpe_after_j_reg.append(
+            torch.tensor(pampjpe_after_refinement_j_reg))
 
-    # print("estimated j3d")
-    # evaluate(estimated_j3d, data_dict['gt_j3d'])
-
-    # print(f"epoch: {epoch}, estimated_loss_total: {estimated_loss_total}, pose_differences_total: {pose_differences_total}")
-
-    return model
-
-
-def wandb_viz(batch, name, estimated_loss, smpl):
-
-    import matplotlib.pyplot as plt
-    from matplotlib.patches import Circle
-    import wandb
-
-    joints2d = projection(batch['estimated_j3d'], batch['cam'])
-    joints2d_gt = projection(batch['gt_j3d'], batch['gt_cam'])
-
-    dims_before = batch['dims_before']
-
-    mpjpe, pa_mpjpe = evaluate(
-        batch['estimated_j3d'][0][None], batch['gt_j3d'][0][None])
-
-    label = f"{name}\nmpjpe: {mpjpe}\npa_mpjpe: {pa_mpjpe}\nestimated_loss: {estimated_loss}"
-
-    if(dims_before[0, 0] == 1920):
-        offset = [420, 0]
-    else:
-        offset = [0, 420]
-
-    des_bboxes = batch['bboxes'].unsqueeze(1).expand(-1, joints2d.shape[1], -1)
-
-    joints2d[:, :, 0] *= des_bboxes[:, :, 2]/2*1.1
-    joints2d[:, :, 0] += des_bboxes[:, :, 0]
-    joints2d[:, :, 1] *= des_bboxes[:, :, 3]/2*1.1
-    joints2d[:, :, 1] += des_bboxes[:, :, 1]
-
-    joints2d_gt[:, :, 0] *= des_bboxes[:, :, 2]/2*1.1
-    joints2d_gt[:, :, 0] += des_bboxes[:, :, 0]
-    joints2d_gt[:, :, 1] *= des_bboxes[:, :, 3]/2*1.1
-    joints2d_gt[:, :, 1] += des_bboxes[:, :, 1]
-
-    # draw gradients
-    plt.imshow(utils.torch_img_to_np_img(batch['image'])[0])
-    ax = plt.gca()
-
-    for i in range(joints2d_gt.shape[1]):
-
-        circ = Circle((joints2d_gt[0, i, 0]+offset[0],
-                       joints2d_gt[0, i, 1]+offset[1]), 10, color='b')
-
-        ax.add_patch(circ)
-
-    for i in range(joints2d.shape[1]):
-
-        circ = Circle((joints2d[0, i, 0]+offset[0],
-                       joints2d[0, i, 1]+offset[1]), 10, color='r')
-
-        ax.add_patch(circ)
-
-    estimated_vertices = find_vertices(
-        batch['estimated_pose'], batch['estimated_shape'], smpl).cpu().detach().numpy()
-    gt_vertices = find_vertices(
-        batch['gt_pose'], batch['gt_shape'], smpl).cpu().detach().numpy()
-
-    points = np.ones((estimated_vertices.shape[1]*2, 4))
-
-    points[:estimated_vertices.shape[1], :3] = estimated_vertices[0]
-    points[estimated_vertices.shape[1]:, :3] = gt_vertices[0]
-    points[estimated_vertices.shape[1]:, 3:] += 10
-
-    wandb.log({f"3d pose": wandb.Object3D(
-        {
-            "type": "lidar/beta",
-            "points": points,
-        }
-    )}, commit=False)
-    # wandb.log({f"{name}_3d_pose_gt": wandb.Object3D(batch['gt_j3d'][0].cpu().detach().numpy())}, commit=False)
-    wandb.log({f"overlayed pose on image": wandb.Image(plt, caption=label)})
-    plt.close()
+    print("mpjpe_before")
+    print(torch.mean(torch.stack(mpjpe_before)))
+    print("pampjpe_before")
+    print(torch.mean(torch.stack(pampjpe_before)))
+    print("mpjpe_after")
+    print(torch.mean(torch.stack(mpjpe_after)))
+    print("pampjpe_after")
+    print(torch.mean(torch.stack(pampjpe_after)))
+    print("mpjpe_after_j_reg")
+    print(torch.mean(torch.stack(mpjpe_after_j_reg)))
+    print("pampjpe_after_j_reg")
+    print(torch.mean(torch.stack(pampjpe_after_j_reg)))

@@ -30,10 +30,6 @@ class Renderer(nn.Module):
     def __init__(self, subset):
         super(Renderer, self).__init__()
 
-        self.sorted_indices = np.load("data/body_model/sorted_indices.npy")
-        self.sorted_indices = torch.tensor(
-            self.sorted_indices, dtype=torch.long).to(args.device)[:, 0]
-
         self.subset = subset
 
         if(subset):
@@ -42,6 +38,9 @@ class Renderer(nn.Module):
                 radius=0.04,
                 points_per_pixel=10
             )
+            self.sorted_indices = np.load("data/body_model/sorted_indices.npy")
+            self.sorted_indices = torch.tensor(
+                self.sorted_indices, dtype=torch.long)[:, 0].to(args.device)
         else:
             self.raster_settings = PointsRasterizationSettings(
                 image_size=224,
@@ -68,9 +67,9 @@ class Renderer(nn.Module):
         #     batch["image"].shape[0], 2).to(args.device)*5000/224
         # principal_point = torch.zeros(batch["image"].shape[0], 2).to(args.device)
 
-        pose = rot6d_to_rotmat(
+        pose = utils.rot6d_to_rotmat(
             batch['pose'].reshape(-1, 6)).reshape(-1, 23, 3, 3)
-        orient = rot6d_to_rotmat(
+        orient = utils.rot6d_to_rotmat(
             batch['orient'].reshape(-1, 6)).reshape(-1, 1, 3, 3)
 
         point_cloud = self.smpl(betas=batch['betas'], body_pose=pose,
@@ -125,18 +124,45 @@ class Renderer(nn.Module):
         return rendered_image.permute(0, 3, 1, 2)
 
 
-def rot6d_to_rotmat(x):
-    """Convert 6D rotation representation to 3x3 rotation matrix.
-    Based on Zhou et al., "On the Continuity of Rotation Representations in Neural Networks", CVPR 2019
-    Input:
-        (B,6) Batch of 6-D rotation representations
-    Output:
-        (B,3,3) Batch of corresponding rotation matrices
-    """
-    x = x.view(-1, 3, 2)
-    a1 = x[:, :, 0]
-    a2 = x[:, :, 1]
-    b1 = F.normalize(a1)
-    b2 = F.normalize(a2 - torch.einsum('bi,bi->b', b1, a2).unsqueeze(-1) * b1)
-    b3 = torch.cross(b1, b2)
-    return torch.stack((b1, b2, b3), dim=-1)
+def return_2d_joints(batch, smpl, J_regressor=None):
+
+    # start_time = time.time()
+
+    focal_length = torch.stack(
+        [batch['intrinsics'][:, 0, 0]/224, batch['intrinsics'][:, 1, 1]/224], dim=1).to(args.device)
+    principal_point = torch.stack(
+        [batch['intrinsics'][:, 0, 2]/-112+1, batch['intrinsics'][:, 1, 2]/-112+1], dim=1)
+    # focal_length = torch.ones(
+    #     batch["image"].shape[0], 2).to(args.device)*5000/224
+    # principal_point = torch.zeros(batch["image"].shape[0], 2).to(args.device)
+
+    pose = utils.rot6d_to_rotmat(
+        batch['pose'].reshape(-1, 6)).reshape(-1, 23, 3, 3)
+    orient = utils.rot6d_to_rotmat(
+        batch['orient'].reshape(-1, 6)).reshape(-1, 1, 3, 3)
+
+    if(J_regressor is not None):
+        point_cloud = utils.find_joints(
+            smpl, batch['betas'], orient, pose, J_regressor, mask=None)
+    else:
+
+        point_cloud = smpl(betas=batch['betas'], body_pose=pose,
+                           global_orient=orient, pose2rot=False).vertices
+
+    point_cloud[:, :, 1] *= -1
+    point_cloud[:, :, 0] *= -1
+    point_cloud *= 2
+
+    cameras = PerspectiveCameras(device=args.device, T=batch['cam'],
+                                 focal_length=focal_length, principal_point=principal_point)
+
+    image_size = torch.tensor([224, 224]).unsqueeze(
+        0).expand(batch['intrinsics'].shape[0], 2).to(args.device)
+
+    feat = torch.ones(
+        point_cloud.shape[0], point_cloud.shape[1], 4).to(args.device)
+
+    pred_verts_2d = cameras.transform_points_screen(
+        point_cloud, image_size)
+
+    return pred_verts_2d
