@@ -46,15 +46,18 @@ def train_pose_refiner_model():
         batch_size=1,
     ).to(args.device)
 
-    J_regressor = torch.load('models/best_pose_refiner/j_regressor.pt')[0].to(args.device)
+    J_regressor = torch.load(
+        'models/best_pose_refiner/retrained_J_Regressor.pt').to(args.device)
+
+    print(J_regressor.shape)
 
     silhouette_renderer = Renderer(subset=True)
     img_renderer = Renderer(subset=False)
 
     pose_refiner = Pose_Refiner().to(args.device)
-    checkpoint = torch.load(
-        "models/pose_refiner_epoch_6.pt", map_location=args.device)
-    pose_refiner.load_state_dict(checkpoint)
+    # checkpoint = torch.load(
+    #     "models/pose_refiner_epoch_6.pt", map_location=args.device)
+    # pose_refiner.load_state_dict(checkpoint)
     pose_refiner.train()
     # pose_refiner.eval()
     # print("model load worked succesfully")
@@ -85,8 +88,6 @@ def train_pose_refiner_model():
 
     for epoch in range(args.train_epochs):
 
-        total_loss = 0
-
         iterator = iter(loader)
         val_iterator = iter(val_loader)
 
@@ -111,10 +112,10 @@ def train_pose_refiner_model():
                 spin_pred_pose, pred_betas, pred_camera = spin_model(
                     spin_image)
 
-            # pred_cam_t = torch.stack([-2*pred_camera[:, 1],
-            #                           -2*pred_camera[:, 2],
-            #                           2*5000/(224 * pred_camera[:, 0] + 1e-9)], dim=-1)
-            # batch["cam"] = pred_cam_t
+            pred_cam_t = torch.stack([-2*pred_camera[:, 1],
+                                      -2*pred_camera[:, 2],
+                                      2*5000/(224 * pred_camera[:, 0] + 1e-9)], dim=-1)
+            batch["cam"] = pred_cam_t
 
             pred_rotmat = rot6d_to_rotmat(spin_pred_pose).view(-1, 24, 3, 3)
 
@@ -171,16 +172,6 @@ def train_pose_refiner_model():
             loss.backward()
             optimizer.step()
 
-            # exit()
-
-            # print("joint_loss.item()")
-            # print(joint_loss.item())
-            # print("discriminated_loss.item()")
-            # print(discriminated_loss.item()/1000)
-            # print("silhouette_loss.item()")
-            # print(silhouette_loss.item()/100)
-            # exit()
-
             # train discriminator
 
             pred_gt = pose_discriminator(spin_pred_pose)
@@ -226,10 +217,10 @@ def train_pose_refiner_model():
                     spin_pred_pose, pred_betas, pred_camera = spin_model(
                         spin_image)
 
-                    # pred_cam_t = torch.stack([-2*pred_camera[:, 1],
-                    #                           -2*pred_camera[:, 2],
-                    #                           2*5000/(224 * pred_camera[:, 0] + 1e-9)], dim=-1)
-                    # batch["gt_translation"] = pred_cam_t
+                    pred_cam_t = torch.stack([-2*pred_camera[:, 1],
+                                              -2*pred_camera[:, 2],
+                                              2*5000/(224 * pred_camera[:, 0] + 1e-9)], dim=-1)
+                    batch["gt_translation"] = pred_cam_t
 
                     pred_rotmat = rot6d_to_rotmat(
                         spin_pred_pose).view(-1, 24, 3, 3)
@@ -270,7 +261,7 @@ def train_pose_refiner_model():
                         "validation mpjpe_difference": mpjpe_after.item()-mpjpe_before_refinement.item(),
                         "validation pampjpe_difference": pampjpe_after.item()-pampjpe_before_refinement.item(), })
 
-        print(f"epoch: {epoch}, loss: {total_loss}")
+        print(f"epoch: {epoch}")
 
         torch.save(pose_refiner.state_dict(),
                    f"models/pose_refiner_epoch_{epoch}.pt")
@@ -318,8 +309,6 @@ def train_joint_regressor():
         (0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
 
     optimizer = optim.Adam([J_regressor], lr=args.j_reg_lr)
-
-    total_loss = 0
 
     for epoch in range(5):
 

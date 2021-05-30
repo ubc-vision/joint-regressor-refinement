@@ -9,13 +9,13 @@ from tqdm import tqdm
 # from pose_estimator import Pose_Estimator
 # from pose_refiner import Pose_Refiner
 from discriminator import Discriminator
-from renderer import Renderer
+from renderer import Renderer, return_2d_joints
 from mesh_renderer import Mesh_Renderer
 # from pose_refiner_transformer import Pose_Refiner_Transformer
 
 from pytorch3d.renderer import PerspectiveCameras
 
-from data import load_data, data_set
+
 # from visualizer import draw_gradients
 
 import torchvision
@@ -62,7 +62,9 @@ def optimize_pose_refiner():
     J_regressor = torch.from_numpy(
         np.load('SPIN/data/J_regressor_h36m.npy')).float().to(args.device)
 
-    J_regressor_retrained = J_regressor.clone()
+    # J_regressor_retrained = J_regressor.clone()
+    J_regressor_retrained = torch.load(
+        "models/best_pose_refiner/retrained_J_Regressor.pt", map_location=args.device)
     J_regressor_retrained.requires_grad = True
 
     # raster_settings = PointsRasterizationSettings(
@@ -85,11 +87,14 @@ def optimize_pose_refiner():
     checkpoint = torch.load(
         "models/best_pose_refiner/opt_disc.pt", map_location=args.device)
     pose_discriminator.load_state_dict(checkpoint)
-    pose_discriminator.eval()
-    # pose_discriminator.train()
+    # pose_discriminator.eval()
+    pose_discriminator.train()
 
     disc_optimizer = optim.Adam(
         pose_discriminator.parameters(), lr=args.opt_disc_learning_rate)
+    checkpoint = torch.load(
+        "models/best_pose_refiner/opt_disc_optim.pt", map_location=args.device)
+    disc_optimizer.load_state_dict(checkpoint)
 
     J_Regressor_optimizer = optim.Adam(
         [J_regressor_retrained], lr=args.j_reg_lr)
@@ -156,7 +161,7 @@ def optimize_pose_refiner():
             this_batch_optimizer = optim.Adam(
                 optimize_parameters, lr=1e-2)
 
-            utils.render_batch(img_renderer, batch, "og")
+            # utils.render_batch(img_renderer, batch, "og")
 
             for i in range(100):
 
@@ -191,9 +196,6 @@ def optimize_pose_refiner():
                 opt_loss.backward()
                 this_batch_optimizer.step()
 
-            utils.render_batch(img_renderer, batch, "optimized")
-            exit()
-
             pred_gt = pose_discriminator(spin_pred_pose)
             pred_disc = pose_discriminator(
                 torch.cat([batch['orient'], batch['pose']], dim=1).detach())
@@ -216,6 +218,15 @@ def optimize_pose_refiner():
             j_regressor_error.backward()
             J_Regressor_optimizer.step()
 
+            mpjpe_new_opt, pampjpe_new_opt = utils.evaluate(
+                pred_joints, batch['gt_j3d'])
+
+            pred_joints = utils.find_joints(
+                smpl, batch["betas"].detach(), pred_rotmat_orient.detach(), pred_rotmat_pose.detach(), J_regressor)
+
+            mpjpe_old_opt, pampjpe_old_opt = utils.evaluate(
+                pred_joints, batch['gt_j3d'])
+
             if(args.wandb_log):
                 wandb.log(
                     {
@@ -224,6 +235,10 @@ def optimize_pose_refiner():
                         "discriminated_loss": discriminated_loss.item(),
                         "discriminator_loss": discriminator_loss.item(),
                         "j_regressor_error": j_regressor_error.item(),
+                        "mpjpe": mpjpe_old_opt.item(),
+                        "pampjpe": pampjpe_old_opt.item(),
+                        "mpjpe difference": mpjpe_new_opt.item()-mpjpe_old_opt.item(),
+                        "pampjpe difference": pampjpe_new_opt.item()-pampjpe_old_opt.item(),
                     })
 
             # rendered_img = img_renderer(
@@ -264,11 +279,14 @@ def optimize_pose_refiner():
 
             # exit()
 
-            if(iteration % 100 == 0):
+            if(args.wandb_log and (iteration+1) % 100 == 0):
 
                 print("saving model and regressor")
 
                 torch.save(pose_discriminator.state_dict(),
                            f"models/pose_discriminator_epoch_{epoch}.pt")
-                np.save("models/retrained_J_Regressor.npy",
-                        J_regressor_retrained.cpu().detach().numpy())
+                torch.save(disc_optimizer.state_dict(),
+                           f"models/disc_optimizer_epoch_{epoch}.pt")
+
+                torch.save(J_regressor_retrained,
+                           "models/retrained_J_Regressor.pt")

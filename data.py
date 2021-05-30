@@ -19,20 +19,20 @@ import pickle
 
 import constants
 
-import create_smpl_gt
-
 from pytorch3d.renderer import PerspectiveCameras
 
 from warp import perturbation_helper, sampling_helper
+
+import h5py
 
 
 class data_set(Dataset):
     def __init__(self, set):
 
         if(set == "train"):
-            location = "/scratch/iamerich/human36m/processed/saved_output_train/ground_truth_pose/"
+            location = "data/human3.6m/precomputed_train/"
         else:
-            location = "/scratch/iamerich/human36m/processed/saved_output_val/ground_truth_pose/"
+            location = "data/human3.6m/precomputed_val/"
 
         self.bboxes = torch.load(
             f"{location}bboxes.pt", map_location="cpu")
@@ -53,35 +53,55 @@ class data_set(Dataset):
             open(f"{location}pixel_annotations.pkl", 'rb'))
         self.pose = torch.load(f"{location}pose.pt", map_location="cpu")
 
+        # self.h5py = h5py.File('data/human3.6m/data.h5', 'r')
+
     def __getitem__(self, index):
 
         # print(f"self.images[index] {self.images[index]}")
 
-        image = imageio.imread(f"{self.images[index]}")/255.0
+        image = imageio.imread(
+            f"{self.images[index]}")/255.0
+
+        # TODO reimplement
+        # image = image/255.0
         image = utils.np_img_to_torch_img(image).float(
         )[:, :constants.IMG_RES, :constants.IMG_RES]
 
         mask_name = self.images[index].split("imageSequence")
         mask_name = f"{mask_name[0]}maskSequence{mask_name[1]}"
+        mask_rcnn = torch.tensor(imageio.imread(
+            f"{mask_name}"), dtype=torch.uint8)
+
+        # TODO reimplement
         mask_rcnn = imageio.imread(f"{mask_name}")/255.0
         mask_rcnn = utils.np_img_to_torch_img(mask_rcnn).float(
         )
 
         valid = mask_rcnn[0, 0] != 0
 
+        # TODO reimplement
         mask_rcnn[:2, :2] = 0
 
         # image, _, _, _, intrinsics = find_crop(
         #     image, self.gt_j2d[index].unsqueeze(0), self.intrinsics[index].unsqueeze(0))
 
-        image, _, _, _, intrinsics = find_crop_mask(
+        # TODO reimplement
+        image, min_x, min_y, scale, intrinsics = find_crop_mask(
             image, self.bboxes[index].unsqueeze(0), self.intrinsics[index].unsqueeze(0))
 
+        repositioned_j2d = self.gt_j2d[index].clone()
+        repositioned_j2d[..., 0] -= min_x
+        repositioned_j2d[..., 1] -= min_y
+        repositioned_j2d /= scale
+        repositioned_j2d /= 1000/224
+
         output_dict = {
+            # "image_name": self.images[index],
+            # "mask_name": mask_name,
             "bboxes": self.bboxes[index],
             "betas": self.betas[index],
             "cam": self.estimated_translation[index],
-            "gt_j2d": self.gt_j2d[index],
+            "gt_j2d": repositioned_j2d,
             "gt_j3d": self.gt_j3d[index],
             "valid": valid,
             "mask_rcnn": mask_rcnn.unsqueeze(0),
