@@ -9,7 +9,7 @@ import torch
 # from render_model import Render_Model
 from optimize import optimize_pose_refiner
 from train import train_pose_refiner_model, train_joint_regressor
-from test import test_pose_refiner_model
+from test import test_pose_refiner_model, test_pose_refiner_model_VIBE
 
 # from utils import h5py_creator
 
@@ -24,5 +24,6 @@ if __name__ == "__main__":
 
     # optimize_pose_refiner()
     # train_pose_refiner_model()
-    test_pose_refiner_model()
+    # test_pose_refiner_model()
+    test_pose_refiner_model_VIBE()
     # train_joint_regressor()

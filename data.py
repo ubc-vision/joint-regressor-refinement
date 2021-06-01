@@ -53,39 +53,22 @@ class data_set(Dataset):
             open(f"{location}pixel_annotations.pkl", 'rb'))
         self.pose = torch.load(f"{location}pose.pt", map_location="cpu")
 
-        # self.h5py = h5py.File('data/human3.6m/data.h5', 'r')
+        self.h5py = h5py.File('data/human3.6m/data.h5', 'r')
 
     def __getitem__(self, index):
 
-        # print(f"self.images[index] {self.images[index]}")
+        split_path = self.images[index].split("/")[-5:]
 
-        image = imageio.imread(
-            f"{self.images[index]}")/255.0
+        image = torch.tensor(self.h5py.get(
+            f"{split_path[0]}/{split_path[1]}/{split_path[2]}/{split_path[3]}/{split_path[4]}")).float()/255.0
 
-        # TODO reimplement
-        # image = image/255.0
-        image = utils.np_img_to_torch_img(image).float(
-        )[:, :constants.IMG_RES, :constants.IMG_RES]
-
-        mask_name = self.images[index].split("imageSequence")
-        mask_name = f"{mask_name[0]}maskSequence{mask_name[1]}"
-        mask_rcnn = torch.tensor(imageio.imread(
-            f"{mask_name}"), dtype=torch.uint8)
-
-        # TODO reimplement
-        mask_rcnn = imageio.imread(f"{mask_name}")/255.0
-        mask_rcnn = utils.np_img_to_torch_img(mask_rcnn).float(
-        )
+        mask_rcnn = torch.tensor(self.h5py.get(
+            f"{split_path[0]}/{split_path[1]}/maskSequence/{split_path[3]}/{split_path[4]}")).float()/255.0
 
         valid = mask_rcnn[0, 0] != 0
 
-        # TODO reimplement
         mask_rcnn[:2, :2] = 0
 
-        # image, _, _, _, intrinsics = find_crop(
-        #     image, self.gt_j2d[index].unsqueeze(0), self.intrinsics[index].unsqueeze(0))
-
-        # TODO reimplement
         image, min_x, min_y, scale, intrinsics = find_crop_mask(
             image, self.bboxes[index].unsqueeze(0), self.intrinsics[index].unsqueeze(0))
 
