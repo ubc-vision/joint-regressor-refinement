@@ -9,7 +9,7 @@ parser.add_argument('--optimization_batch_size', type=int, default=1)
 parser.add_argument('--learning_rate', type=float, default=1e-6)
 parser.add_argument('--disc_learning_rate', type=float, default=1e-4)
 parser.add_argument('--opt_disc_learning_rate', type=float, default=1e-3)
-parser.add_argument('--j_reg_lr', type=float, default=1e-3)
+parser.add_argument('--j_reg_lr', type=float, default=1e-5)
 parser.add_argument('--optimization_rate', type=float, default=1e4)
 parser.add_argument('--wandb_log', action='store_true')
 

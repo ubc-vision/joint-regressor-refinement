@@ -59,13 +59,14 @@ class Renderer(nn.Module):
 
         # start_time = time.time()
 
-        # focal_length = torch.stack(
-        #     [batch['intrinsics'][:, 0, 0]/224, batch['intrinsics'][:, 1, 1]/224], dim=1).to(args.device)
-        # principal_point = torch.stack(
-        #     [batch['intrinsics'][:, 0, 2]/-112+1, batch['intrinsics'][:, 1, 2]/-112+1], dim=1)
-        focal_length = torch.ones(
-            batch["image"].shape[0], 2).to(args.device)*5000/224
-        principal_point = torch.zeros(batch["image"].shape[0], 2).to(args.device)
+        focal_length = torch.stack(
+            [batch['intrinsics'][:, 0, 0]/224, batch['intrinsics'][:, 1, 1]/224], dim=1).to(args.device)
+        principal_point = torch.stack(
+            [batch['intrinsics'][:, 0, 2]/-112+1, batch['intrinsics'][:, 1, 2]/-112+1], dim=1)
+        # focal_length = torch.ones(
+        #     batch["image"].shape[0], 2).to(args.device)*5000/224
+        # principal_point = torch.zeros(
+        #     batch["image"].shape[0], 2).to(args.device)
 
         pose = utils.rot6d_to_rotmat(
             batch['pose'].reshape(-1, 6)).reshape(-1, 23, 3, 3)
@@ -128,13 +129,13 @@ def return_2d_joints(batch, smpl, J_regressor=None):
 
     # start_time = time.time()
 
-    # focal_length = torch.stack(
-    #     [batch['intrinsics'][:, 0, 0]/224, batch['intrinsics'][:, 1, 1]/224], dim=1).to(args.device)
-    # principal_point = torch.stack(
-    #     [batch['intrinsics'][:, 0, 2]/-112+1, batch['intrinsics'][:, 1, 2]/-112+1], dim=1)
-    focal_length = torch.ones(
-        batch["image"].shape[0], 2).to(args.device)*5000/224
-    principal_point = torch.zeros(batch["image"].shape[0], 2).to(args.device)
+    focal_length = torch.stack(
+        [batch['intrinsics'][:, 0, 0]/224, batch['intrinsics'][:, 1, 1]/224], dim=1).to(args.device)
+    principal_point = torch.stack(
+        [batch['intrinsics'][:, 0, 2]/-112+1, batch['intrinsics'][:, 1, 2]/-112+1], dim=1)
+    # focal_length = torch.ones(
+    #     batch["image"].shape[0], 2).to(args.device)*5000/224
+    # principal_point = torch.zeros(batch["image"].shape[0], 2).to(args.device)
 
     pose = utils.rot6d_to_rotmat(
         batch['pose'].reshape(-1, 6)).reshape(-1, 23, 3, 3)

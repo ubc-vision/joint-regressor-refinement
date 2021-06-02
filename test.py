@@ -35,11 +35,19 @@ from SPIN.models import hmr, SMPL
 import SPIN.config as config
 from SPIN.utils.geometry import rot6d_to_rotmat
 
-import sys  # noqa
-sys.path.append('/scratch/iamerich/VIBE')  # noqa
+# import sys  # noqa
+# sys.path.append('/scratch/iamerich/VIBE')  # noqa
 
-from lib.utils.demo_utils import download_ckpt
-from lib.models.vibe import VIBE_Demo
+# from lib.utils.demo_utils import download_ckpt
+# from lib.models.vibe import VIBE_Demo
+
+import sys  # noqa
+sys.path.append('/scratch/iamerich/MEVA')  # noqa
+
+import os
+
+from meva.lib.meva_model import MEVA_demo
+from meva.utils.video_config import update_cfg
 
 
 def test_pose_refiner_model():
@@ -57,8 +65,10 @@ def test_pose_refiner_model():
 
     initial_J_regressor = torch.from_numpy(
         np.load('SPIN/data/J_regressor_h36m.npy')).float().to(args.device)
+    # J_regressor = torch.load(
+    #     'models/best_pose_refiner/retrained_J_Regressor.pt').to(args.device)
     J_regressor = torch.load(
-        'models/best_pose_refiner/retrained_J_Regressor.pt').to(args.device)
+        'models/retrained_J_Regressor.pt').to(args.device)
 
     # new_J_regressor = torch.load(
     #     'models/j_regressor_epoch_0.pt')[0].to(args.device)
@@ -80,7 +90,7 @@ def test_pose_refiner_model():
     # data = data_set("train")
 
     loader = torch.utils.data.DataLoader(
-        data, batch_size=args.batch_size, num_workers=0, pin_memory=True, shuffle=True, drop_last=True)
+        data, batch_size=args.batch_size, num_workers=8, pin_memory=True, shuffle=True, drop_last=True)
 
     normalize = transforms.Normalize(
         (0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
@@ -94,11 +104,14 @@ def test_pose_refiner_model():
 
     for iteration in tqdm(range(len(loader))):
 
-        try:
-            batch = next(iterator)
-        except:
-            time.sleep(1)
-            continue
+        batch = next(iterator)
+
+        # try:
+        #     batch = next(iterator)
+        # except:
+        #     print("continuing")
+        #     time.sleep(1)
+        #     continue
 
         for item in batch:
             if(item != "valid" and item != "path" and item != "pixel_annotations"):
@@ -187,6 +200,7 @@ def test_pose_refiner_model():
         # mpjpe_after_j_reg.append(torch.tensor(mpjpe_after_refinement_j_reg))
         # pampjpe_after_j_reg.append(
         #     torch.tensor(pampjpe_after_refinement_j_reg))
+
     print("MPJPE")
     print(
         f"{torch.mean(torch.stack(mpjpe_before)):.4f} -> {torch.mean(torch.stack(mpjpe_after)):.4f}")
@@ -197,19 +211,43 @@ def test_pose_refiner_model():
 
 def test_pose_refiner_model_VIBE():
 
-    model = VIBE_Demo(
-        seqlen=16,
-        n_layers=2,
-        hidden_size=1024,
-        add_linear=True,
-        use_residual=True,
+    # model = VIBE_Demo(
+    #     seqlen=16,
+    #     n_layers=2,
+    #     hidden_size=1024,
+    #     add_linear=True,
+    #     use_residual=True,
+    # ).to(args.device)
+    # pretrained_file = download_ckpt(use_3dpw=False)
+    # ckpt = torch.load(pretrained_file)
+    # print(f'Performance of pretrained model on 3DPW: {ckpt["performance"]}')
+    # ckpt = ckpt['gen_state_dict']
+    # model.load_state_dict(ckpt, strict=False)
+    # model.eval()
+
+    os.chdir("/scratch/iamerich/MEVA/")  # noqa
+
+    pretrained_file = f"/scratch/iamerich/MEVA/results/meva/train_meva_2/model_best.pth.tar"
+
+    config_file = "/scratch/iamerich/MEVA/meva/cfg/train_meva_2.yml"
+    cfg = update_cfg(config_file)
+    model = MEVA_demo(
+        n_layers=cfg.MODEL.TGRU.NUM_LAYERS,
+        batch_size=cfg.TRAIN.BATCH_SIZE,
+        seqlen=cfg.DATASET.SEQLEN,
+        hidden_size=cfg.MODEL.TGRU.HIDDEN_SIZE,
+        add_linear=cfg.MODEL.TGRU.ADD_LINEAR,
+        bidirectional=cfg.MODEL.TGRU.BIDIRECTIONAL,
+        use_residual=cfg.MODEL.TGRU.RESIDUAL,
+        cfg=cfg.VAE_CFG,
     ).to(args.device)
-    pretrained_file = download_ckpt(use_3dpw=False)
     ckpt = torch.load(pretrained_file)
-    print(f'Performance of pretrained model on 3DPW: {ckpt["performance"]}')
+    # print(f'Performance of pretrained model on 3DPW: {ckpt["performance"]}')
     ckpt = ckpt['gen_state_dict']
-    model.load_state_dict(ckpt, strict=False)
+    model.load_state_dict(ckpt)
     model.eval()
+
+    os.chdir("/scratch/iamerich/human-body-pose/")  # noqa
 
     initial_J_regressor = torch.from_numpy(
         np.load('SPIN/data/J_regressor_h36m.npy')).float().to(args.device)
@@ -251,6 +289,8 @@ def test_pose_refiner_model_VIBE():
     pampjpe_after = []
 
     iterator = iter(loader)
+
+    os.chdir("/scratch/iamerich/MEVA/")  # noqa
 
     for iteration in tqdm(range(len(loader))):
 

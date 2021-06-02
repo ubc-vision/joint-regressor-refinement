@@ -53,21 +53,25 @@ class data_set(Dataset):
             open(f"{location}pixel_annotations.pkl", 'rb'))
         self.pose = torch.load(f"{location}pose.pt", map_location="cpu")
 
-        self.h5py = h5py.File('data/human3.6m/data.h5', 'r')
+        # self.h5py = h5py.File('data/human3.6m/data.h5', 'r')
 
     def __getitem__(self, index):
 
         split_path = self.images[index].split("/")[-5:]
 
-        image = torch.tensor(self.h5py.get(
-            f"{split_path[0]}/{split_path[1]}/{split_path[2]}/{split_path[3]}/{split_path[4]}")).float()/255.0
+        with h5py.File('data/human3.6m/data.h5', 'r') as f:
+            image = f.get(
+                f"{split_path[0]}/{split_path[1]}/{split_path[2]}/{split_path[3]}/{split_path[4]}")
+            mask_rcnn = f.get(
+                f"{split_path[0]}/{split_path[1]}/maskSequence/{split_path[3]}/{split_path[4]}")
 
-        mask_rcnn = torch.tensor(self.h5py.get(
-            f"{split_path[0]}/{split_path[1]}/maskSequence/{split_path[3]}/{split_path[4]}")).float()/255.0
+            image = torch.tensor(image).float()/255.0
 
-        valid = mask_rcnn[0, 0] != 0
+            mask_rcnn = torch.tensor(mask_rcnn).float()/255.0
 
-        mask_rcnn[:2, :2] = 0
+        valid = mask_rcnn[0, 0, 0] != 0
+
+        mask_rcnn[:, :2, :2] = 0
 
         image, min_x, min_y, scale, intrinsics = find_crop_mask(
             image, self.bboxes[index].unsqueeze(0), self.intrinsics[index].unsqueeze(0))
@@ -87,7 +91,7 @@ class data_set(Dataset):
             "gt_j2d": repositioned_j2d,
             "gt_j3d": self.gt_j3d[index],
             "valid": valid,
-            "mask_rcnn": mask_rcnn.unsqueeze(0),
+            "mask_rcnn": mask_rcnn,
             "image": image[0],
             "intrinsics": intrinsics[0],
             "orient": self.orient[index],
