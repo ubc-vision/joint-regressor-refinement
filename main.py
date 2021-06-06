@@ -19,7 +19,7 @@ if __name__ == "__main__":
 
     if(args.wandb_log):
         wandb.init(project="human_body_pose_optimization",
-                   name="training joint regressor")
+                   name="training pose refiner")
         wandb.config.update(args)
 
     # optimize_pose_refiner()

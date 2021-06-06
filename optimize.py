@@ -8,7 +8,7 @@ from tqdm import tqdm
 # from render_model import Render_Model
 # from pose_estimator import Pose_Estimator
 # from pose_refiner import Pose_Refiner
-from discriminator import Discriminator
+from discriminator import Discriminator, Shape_Discriminator
 from renderer import Renderer, return_2d_joints
 from mesh_renderer import Mesh_Renderer
 # from pose_refiner_transformer import Pose_Refiner_Transformer
@@ -63,12 +63,15 @@ def optimize_pose_refiner():
         pretrained=True).to(args.device)
     maskrcnn.eval()
 
+    new_J_regressor = torch.load(
+        "models/retrained_J_Regressor.pt").to(args.device)
+
     J_regressor = torch.from_numpy(
         np.load('SPIN/data/J_regressor_h36m.npy')).float().to(args.device)
 
-    # J_regressor_retrained = J_regressor.clone()
-    J_regressor_retrained = torch.load(
-        "models/best_pose_refiner/retrained_J_Regressor.pt", map_location=args.device)
+    J_regressor_retrained = J_regressor.clone()
+    # J_regressor_retrained = torch.load(
+    #     "models/best_pose_refiner/retrained_J_Regressor.pt", map_location=args.device)
     J_regressor_retrained.requires_grad = True
 
     # raster_settings = PointsRasterizationSettings(
@@ -88,10 +91,12 @@ def optimize_pose_refiner():
     # silhouette_renderer = nn.DataParallel(silhouette_renderer)
 
     pose_discriminator = Discriminator().to(args.device)
+    # checkpoint = torch.load(
+    #     "models/best_pose_refiner/opt_disc.pt", map_location=args.device)
     checkpoint = torch.load(
-        "models/best_pose_refiner/opt_disc.pt", map_location=args.device)
+        "models/pose_discriminator_epoch_0.pt", map_location=args.device)
+
     pose_discriminator.load_state_dict(checkpoint)
-    # pose_discriminator.eval()
     pose_discriminator.train()
 
     disc_optimizer = optim.Adam(
@@ -99,6 +104,16 @@ def optimize_pose_refiner():
     checkpoint = torch.load(
         "models/best_pose_refiner/opt_disc_optim.pt", map_location=args.device)
     disc_optimizer.load_state_dict(checkpoint)
+
+    shape_discriminator = Shape_Discriminator().to(args.device)
+    checkpoint = torch.load(
+        "models/shape_discriminator_epoch_0.pt", map_location=args.device)
+
+    shape_discriminator.load_state_dict(checkpoint)
+
+    shape_discriminator.train()
+    shape_disc_optimizer = optim.Adam(
+        shape_discriminator.parameters(), lr=args.opt_disc_learning_rate)
 
     J_Regressor_optimizer = optim.Adam(
         [J_regressor_retrained], lr=args.j_reg_lr)
@@ -165,7 +180,13 @@ def optimize_pose_refiner():
             this_batch_optimizer = optim.Adam(
                 optimize_parameters, lr=1e-2)
 
-            # utils.render_batch(img_renderer, batch, "og")
+            # new_joints_2d = return_2d_joints(
+            #     batch, smpl, J_regressor=new_J_regressor, mask=j_reg_mask)
+
+            # joints_2d = return_2d_joints(
+            #     batch, smpl, J_regressor=J_regressor)
+            # utils.render_batch(img_renderer, batch, "og", [
+            #                    new_joints_2d, joints_2d, batch["gt_j2d"]])
 
             for i in range(100):
 
@@ -182,33 +203,62 @@ def optimize_pose_refiner():
                     pred_joints), batch['gt_j3d']/1000)
 
                 rendered_silhouette = silhouette_renderer(batch)
-
                 rendered_silhouette = rendered_silhouette[:, 3].unsqueeze(1)
-
                 silhouette_loss = loss_function(
                     rendered_silhouette[batch["valid"]], batch["mask_rcnn"][batch["valid"]])
+
+                # joints_2d = return_2d_joints(
+                #     batch, smpl, J_regressor=J_regressor)
+                # loss_2d = loss_function(batch['gt_j2d'], joints_2d[..., :2])
 
                 pred_disc = pose_discriminator(
                     torch.cat([batch['orient'], batch['pose']], dim=1))
 
-                discriminated_loss = loss_function(pred_disc, torch.ones(
+                pred_shape_disc = shape_discriminator(batch["betas"])
+
+                pose_discriminated_loss = loss_function(pred_disc, torch.ones(
                     pred_disc.shape).to(args.device))
 
-                opt_loss = silhouette_loss*100+joint_loss*10000+discriminated_loss*100
+                shape_discriminated_loss = loss_function(pred_shape_disc, torch.ones(
+                    pred_shape_disc.shape).to(args.device))
+
+                opt_loss = silhouette_loss*100+joint_loss*10000 + \
+                    pose_discriminated_loss*100+shape_discriminated_loss*10
+                # opt_loss = loss_2d/10+joint_loss*10000 + \
+                #     pose_discriminated_loss*100+shape_discriminated_loss*10
+                # opt_loss = joint_loss*10000 + \
+                #     pose_discriminated_loss*100+shape_discriminated_loss*10
 
                 this_batch_optimizer.zero_grad()
                 opt_loss.backward()
                 this_batch_optimizer.step()
 
+            # new_joints_2d = return_2d_joints(
+            #     batch, smpl, J_regressor=new_J_regressor, mask=j_reg_mask)
+            # joints_2d = return_2d_joints(
+            #     batch, smpl, J_regressor=J_regressor)
+            # utils.render_batch(img_renderer, batch, "final", [
+            #                    new_joints_2d, joints_2d, batch["gt_j2d"]])
+            # exit()
+
             pred_gt = pose_discriminator(spin_pred_pose)
             pred_disc = pose_discriminator(
                 torch.cat([batch['orient'], batch['pose']], dim=1).detach())
-            discriminator_loss = loss_function(pred_disc, torch.zeros(
+            pose_discriminator_loss = loss_function(pred_disc, torch.zeros(
                 pred_disc.shape).to(args.device))+loss_function(pred_gt, torch.ones(
                     pred_disc.shape).to(args.device))
             disc_optimizer.zero_grad()
-            discriminator_loss.backward()
+            pose_discriminator_loss.backward()
             disc_optimizer.step()
+
+            pred_gt = shape_discriminator(spin_pred_betas)
+            pred_disc = shape_discriminator(batch["betas"])
+            shape_discriminator_loss = loss_function(pred_disc, torch.zeros(
+                pred_disc.shape).to(args.device))+loss_function(pred_gt, torch.ones(
+                    pred_disc.shape).to(args.device))
+            shape_disc_optimizer.zero_grad()
+            shape_discriminator_loss.backward()
+            shape_disc_optimizer.step()
 
             # get the joints from the joint regressor retrained
             # get error to gt
@@ -235,9 +285,12 @@ def optimize_pose_refiner():
                 wandb.log(
                     {
                         "silhouette_loss": silhouette_loss.item(),
+                        # "loss_2d": loss_2d.item(),
                         "joint_loss": joint_loss.item(),
-                        "discriminated_loss": discriminated_loss.item(),
-                        "discriminator_loss": discriminator_loss.item(),
+                        "pose_discriminated_loss": pose_discriminated_loss.item(),
+                        "shape_discriminated_loss": shape_discriminated_loss.item(),
+                        "pose_discriminator_loss": pose_discriminator_loss.item(),
+                        "shape_discriminator_loss": shape_discriminator_loss.item(),
                         "j_regressor_error": j_regressor_error.item(),
                         "mpjpe": mpjpe_old_opt.item(),
                         "pampjpe": pampjpe_old_opt.item(),
@@ -291,6 +344,11 @@ def optimize_pose_refiner():
                            f"models/pose_discriminator_epoch_{epoch}.pt")
                 torch.save(disc_optimizer.state_dict(),
                            f"models/disc_optimizer_epoch_{epoch}.pt")
+
+                torch.save(shape_discriminator.state_dict(),
+                           f"models/shape_discriminator_epoch_{epoch}.pt")
+                torch.save(shape_disc_optimizer.state_dict(),
+                           f"models/shape_disc_optimizer_epoch_{epoch}.pt")
 
                 torch.save(J_regressor_retrained,
                            "models/retrained_J_Regressor.pt")
@@ -446,8 +504,8 @@ def optimize_network():
                     {
                         # "silhouette_loss": silhouette_loss.item(),
                         "joint_loss": joint_loss.item(),
-                        # "discriminated_loss": discriminated_loss.item(),
-                        # "discriminator_loss": discriminator_loss.item(),
+                        # "pose_discriminated_loss": pose_discriminated_loss.item(),
+                        # "pose_discriminator_loss": pose_discriminator_loss.item(),
                         "j_regressor_error": j_regressor_error.item(),
                         "mpjpe": mpjpe_old_opt.item(),
                         "pampjpe": pampjpe_old_opt.item(),

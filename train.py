@@ -49,8 +49,6 @@ def train_pose_refiner_model():
     J_regressor = torch.load(
         'models/best_pose_refiner/retrained_J_Regressor.pt').to(args.device)
 
-    print(J_regressor.shape)
-
     silhouette_renderer = Renderer(subset=True)
     img_renderer = Renderer(subset=False)
 
@@ -164,7 +162,7 @@ def train_pose_refiner_model():
             rendered_silhouette = rendered_silhouette[:, 3].unsqueeze(1)
 
             silhouette_loss = loss_function(
-                rendered_silhouette[batch["valid"]], batch["mask_rcnn"][batch["valid"]])
+                [batch["valid"]], batch["mask_rcnn"][batch["valid"]])
 
             loss = joint_loss+discriminated_loss/1000+silhouette_loss/100
 
@@ -220,7 +218,7 @@ def train_pose_refiner_model():
                     pred_cam_t = torch.stack([-2*pred_camera[:, 1],
                                               -2*pred_camera[:, 2],
                                               2*5000/(224 * pred_camera[:, 0] + 1e-9)], dim=-1)
-                    batch["gt_translation"] = pred_cam_t
+                    batch["cam"] = pred_cam_t
 
                     pred_rotmat = rot6d_to_rotmat(
                         spin_pred_pose).view(-1, 24, 3, 3)

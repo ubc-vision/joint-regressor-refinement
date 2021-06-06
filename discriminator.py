@@ -69,9 +69,25 @@ class Discriminator(nn.Module):
             preds.append(this_joint_est)
 
         preds = torch.stack(preds, dim=1)
-        # print("preds.shape")
-        # print(preds.shape)
-        # exit()
 
         return nn.Sigmoid()(preds)
-        # return preds
+
+
+class Shape_Discriminator(nn.Module):
+    # def __init__(self, num_inputs, num_joints):
+    def __init__(self):
+        super(Shape_Discriminator, self).__init__()
+
+        self.shape_operations = nn.Sequential(
+            torch.nn.Linear(10, 10),
+            nn.ReLU(),
+            torch.nn.Linear(10, 5),
+            nn.ReLU(),
+            torch.nn.Linear(5, 1),
+        ).to(args.device)
+
+    def forward(self, shapes):
+
+        shape_disc = self.shape_operations(shapes)
+
+        return nn.Sigmoid()(shape_disc)

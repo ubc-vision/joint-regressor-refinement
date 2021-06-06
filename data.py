@@ -57,17 +57,38 @@ class data_set(Dataset):
 
     def __getitem__(self, index):
 
-        split_path = self.images[index].split("/")[-5:]
+        if(args.compute_canada):
 
-        with h5py.File('data/human3.6m/data.h5', 'r') as f:
-            image = f.get(
-                f"{split_path[0]}/{split_path[1]}/{split_path[2]}/{split_path[3]}/{split_path[4]}")
-            mask_rcnn = f.get(
-                f"{split_path[0]}/{split_path[1]}/maskSequence/{split_path[3]}/{split_path[4]}")
+            split_path = self.images[index].split("/")[-5:]
 
-            image = torch.tensor(image).float()/255.0
+            with h5py.File('data/human3.6m/data.h5', 'r') as f:
+                image = f.get(
+                    f"{split_path[0]}/{split_path[1]}/{split_path[2]}/{split_path[3]}/{split_path[4]}")
+                mask_rcnn = f.get(
+                    f"{split_path[0]}/{split_path[1]}/maskSequence/{split_path[3]}/{split_path[4]}")
 
-            mask_rcnn = torch.tensor(mask_rcnn).float()/255.0
+                image = torch.tensor(image).float()/255.0
+
+                mask_rcnn = torch.tensor(mask_rcnn).float()/255.0
+
+        else:
+            image = imageio.imread(
+                f"{self.images[index]}")/255.0
+
+            # TODO reimplement
+            # image = image/255.0
+            image = utils.np_img_to_torch_img(image).float(
+            )[:, :constants.IMG_RES, :constants.IMG_RES]
+
+            mask_name = self.images[index].split("imageSequence")
+            mask_name = f"{mask_name[0]}maskSequence{mask_name[1]}"
+            mask_rcnn = torch.tensor(imageio.imread(
+                f"{mask_name}"), dtype=torch.uint8)
+
+            # TODO reimplement
+            mask_rcnn = imageio.imread(f"{mask_name}")/255.0
+            mask_rcnn = utils.np_img_to_torch_img(mask_rcnn).float(
+            ).unsqueeze(0)
 
         valid = mask_rcnn[0, 0, 0] != 0
 
