@@ -8,8 +8,8 @@ import torch
 
 # from render_model import Render_Model
 from optimize import optimize_pose_refiner, optimize_network
-from train import train_pose_refiner_model, train_joint_regressor
-from test import test_pose_refiner_model, test_pose_refiner_model_VIBE
+from train import train_pose_refiner_model, train_joint_regressor, train_pose_refiner_translation_model
+from test import test_pose_refiner_model, test_pose_refiner_model_VIBE, test_pose_refiner_translation_model
 
 # from utils import h5py_creator
 
@@ -19,12 +19,14 @@ if __name__ == "__main__":
 
     if(args.wandb_log):
         wandb.init(project="human_body_pose_optimization",
-                   name="training pose refiner")
+                   name="refining transformer")
         wandb.config.update(args)
 
     # optimize_pose_refiner()
-    # train_pose_refiner_model()
-    test_pose_refiner_model()
+    # train_pose_redfiner_model()
+    # test_pose_refiner_model()
     # test_pose_refiner_model_VIBE()
     # optimize_network()
     # train_joint_regressor()
+    train_pose_refiner_translation_model()
+    # test_pose_refiner_translation_model()

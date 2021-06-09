@@ -53,7 +53,7 @@ class Renderer(nn.Module):
             batch_size=1,
         ).to(args.device)
 
-    def forward(self, batch):
+    def forward(self, batch, point_cloud=None):
 
         # import time
 
@@ -68,21 +68,23 @@ class Renderer(nn.Module):
         principal_point = torch.zeros(
             batch["image"].shape[0], 2).to(args.device)
 
-        pose = utils.rot6d_to_rotmat(
-            batch['pose'].reshape(-1, 6)).reshape(-1, 23, 3, 3)
-        orient = utils.rot6d_to_rotmat(
-            batch['orient'].reshape(-1, 6)).reshape(-1, 1, 3, 3)
+        if(point_cloud is None):
 
-        point_cloud = self.smpl(betas=batch['betas'], body_pose=pose,
-                                global_orient=orient, pose2rot=False).vertices
+            pose = utils.rot6d_to_rotmat(
+                batch['pose'].reshape(-1, 6)).reshape(-1, 23, 3, 3)
+            orient = utils.rot6d_to_rotmat(
+                batch['orient'].reshape(-1, 6)).reshape(-1, 1, 3, 3)
 
-        if(self.subset):
-            idx = self.sorted_indices[-700:]
-            point_cloud = point_cloud[:, idx]
+            point_cloud = self.smpl(betas=batch['betas'], body_pose=pose,
+                                    global_orient=orient, pose2rot=False).vertices
 
         point_cloud[:, :, 1] *= -1
         point_cloud[:, :, 0] *= -1
         point_cloud *= 2
+
+        if(self.subset):
+            idx = self.sorted_indices[-700:]
+            point_cloud = point_cloud[:, idx]
 
         cameras = PerspectiveCameras(device=args.device, T=batch['cam'],
                                      focal_length=focal_length, principal_point=principal_point)

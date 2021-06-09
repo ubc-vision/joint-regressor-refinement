@@ -107,3 +107,65 @@ class Pose_Refiner(nn.Module):
         est_cam = self.cam_layer(output) + batch["cam"]
 
         return est_pose, est_betas, est_cam
+
+
+class Pose_Refiner_Translation(nn.Module):
+    # def __init__(self, num_inputs, num_joints):
+    def __init__(self):
+        super(Pose_Refiner_Translation, self).__init__()
+
+        self.num_inputs = 512
+        self.num_joints = 17
+
+        self.resnet = getattr(models, "resnet18")(pretrained=True)
+        # self.resnet = getattr(models, "resnet50")(pretrained=True)
+
+        self.conv1 = nn.Conv2d(6, 64, kernel_size=(
+            7, 7), stride=(2, 2), padding=(3, 3), bias=False)
+        self.bn1 = nn.BatchNorm2d(
+            64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+
+        self.resnet = nn.Sequential(
+            *list(self.resnet.children())[3:-1])
+
+        self.linear_1 = nn.Linear(self.num_inputs, 512)
+
+        self.position_layer = nn.Linear(512, self.num_joints*3)
+
+        nn.init.xavier_uniform_(self.position_layer.weight, gain=0.01)
+
+        self.normalize = transforms.Normalize(
+            (0.475, 0.475, 0.475, 0.485, 0.456, 0.406), (0.225, 0.225, 0.225, 0.229, 0.224, 0.225))
+
+        self.img_renderer = Renderer(subset=False)
+
+    def forward(self, batch):
+
+        rendered_image = self.img_renderer(
+            batch, point_cloud=batch["pred_vertices"])
+
+        final_image = torch.cat([rendered_image[:, :3], batch['image']], dim=1)
+
+        final_image = self.normalize(final_image)
+
+        output = self.conv1(final_image)
+        output = self.bn1(output)
+
+        output = nn.ReLU(inplace=True)(output)
+
+        output = self.resnet(output)
+
+        output = output.reshape(-1, self.num_inputs)
+
+        output = self.linear_1(output)
+
+        output = nn.ReLU(inplace=True)(output)
+
+        # concatenate original positions here?
+        # output = torch.cat(
+        #     [output, batch["orient"].reshape(-1, 1*6), batch["pose"].reshape(-1, 23*6), batch["betas"], batch["cam"]], dim=1)
+
+        est_position = self.position_layer(
+            output).reshape(-1, self.num_joints, 3)*.1 + batch["pred_j3d"]
+
+        return est_position
