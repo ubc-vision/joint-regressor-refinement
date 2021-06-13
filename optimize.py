@@ -41,8 +41,6 @@ from utils import utils
 import os
 import imageio
 
-from torch.nn import functional as F
-
 import copy
 
 

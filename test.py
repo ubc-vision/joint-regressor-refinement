@@ -52,7 +52,7 @@ from lib.models.vibe import VIBE_Demo
 # from meva.utils.video_config import update_cfg
 
 
-def test_pose_refiner_model():
+def test_pose_refiner_model(epoch=0):
 
     model = hmr(config.SMPL_MEAN_PARAMS).to(args.device)
     checkpoint = torch.load(
@@ -65,10 +65,12 @@ def test_pose_refiner_model():
         batch_size=1,
     ).to(args.device)
 
-    initial_J_regressor = torch.from_numpy(
-        np.load('SPIN/data/J_regressor_h36m.npy')).float().to(args.device)
     J_regressor = torch.load(
         'models/best_pose_refiner/retrained_J_Regressor.pt').to(args.device)
+    J_regressor_initial = torch.from_numpy(
+        np.load('SPIN/data/J_regressor_h36m.npy')).float().to(args.device)
+
+    j_reg_mask = utils.find_j_reg_mask(J_regressor_initial)
     # J_regressor = torch.load(
     #     'models/pose_refiner_epoch_0.pt').to(args.device)
     # J_regressor = torch.load(
@@ -79,13 +81,13 @@ def test_pose_refiner_model():
     # new_J_regressor = torch.load(
     #     'models/j_regressor_epoch_0.pt')[0].to(args.device)
 
-    num_networks = 5
+    num_networks = 1
 
     pose_refiners = [Pose_Refiner().to(args.device)
                      for _ in range(num_networks)]
     for i in range(num_networks):
         checkpoint = torch.load(
-            f"models/pose_refiner_{i}_epoch_0.pt", map_location=args.device)
+            f"models/pose_refiner_{i}_epoch_{epoch}.pt", map_location=args.device)
         pose_refiners[i].load_state_dict(checkpoint)
         pose_refiners[i].eval()
 
@@ -151,7 +153,7 @@ def test_pose_refiner_model():
             #                    [joints_2d, initial_joints_2d, batch["gt_j2d"]])
 
             pred_joints = utils.find_joints(
-                smpl, batch["betas"], pred_rotmat[:, 0].unsqueeze(1), pred_rotmat[:, 1:], J_regressor)
+                smpl, batch["betas"], pred_rotmat[:, 0].unsqueeze(1), pred_rotmat[:, 1:], J_regressor, mask=j_reg_mask)
 
             mpjpe_before_refinement, pampjpe_before_refinement = utils.evaluate(
                 pred_joints, batch['gt_j3d'])
@@ -173,13 +175,14 @@ def test_pose_refiner_model():
                 pred_rotmat = rot6d_to_rotmat(est_pose).view(-1, 24, 3, 3)
 
                 pred_joints = utils.find_joints(
-                    smpl, batch["betas"], pred_rotmat[:, :1], pred_rotmat[:, 1:], J_regressor)
+                    smpl, batch["betas"], pred_rotmat[:, :1], pred_rotmat[:, 1:], J_regressor, mask=j_reg_mask)
 
                 mpjpe_after_refinement, pampjpe_after_refinement = utils.evaluate(
                     pred_joints, batch['gt_j3d'])
 
                 mpjpe_after[i].append(torch.tensor(mpjpe_after_refinement))
                 pampjpe_after[i].append(torch.tensor(pampjpe_after_refinement))
+            # exit()
 
     print("MPJPE")
     print(

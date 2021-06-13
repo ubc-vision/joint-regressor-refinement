@@ -2,7 +2,7 @@ import argparse
 
 parser = argparse.ArgumentParser()
 
-parser.add_argument('--train_epochs', type=int, default=3)
+parser.add_argument('--train_epochs', type=int, default=5)
 parser.add_argument('--opt_steps', type=int, default=40)
 parser.add_argument('--batch_size', type=int, default=256)
 parser.add_argument('--optimization_batch_size', type=int, default=1)

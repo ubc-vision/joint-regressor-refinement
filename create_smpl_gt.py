@@ -190,40 +190,40 @@ def find_crop(image, joints_2d, intrinsics=None):
     return image, min_x, min_y, scale, intrinsics
 
 
-def estimate_translation_np(S, joints_2d, focal_length=5000, img_size=224):
-    """Find camera translation that brings 3D joints S closest to 2D the corresponding joints_2d.
-    Input:
-       S: (17, 3) 3D joint locations
-       joints: (17, 3) 2D joint locations and confidence
-    Returns:
-       (3,) camera translation vector
-    """
+# def estimate_translation_np(S, joints_2d, focal_length=5000, img_size=224):
+#     """Find camera translation that brings 3D joints S closest to 2D the corresponding joints_2d.
+#     Input:
+#        S: (17, 3) 3D joint locations
+#        joints: (17, 3) 2D joint locations and confidence
+#     Returns:
+#        (3,) camera translation vector
+#     """
 
-    num_joints = S.shape[0]
-    # focal length
-    f = np.array([focal_length, focal_length])
-    # optical center
-    center = np.array([img_size/2., img_size/2.])
+#     num_joints = S.shape[0]
+#     # focal length
+#     f = np.array([focal_length, focal_length])
+#     # optical center
+#     center = np.array([img_size/2., img_size/2.])
 
-    # transformations
-    Z = np.reshape(np.tile(S[:, 2], (2, 1)).T, -1)
-    XY = np.reshape(S[:, 0:2], -1)
-    O = np.tile(center, num_joints)
-    F = np.tile(f, num_joints)
+#     # transformations
+#     Z = np.reshape(np.tile(S[:, 2], (2, 1)).T, -1)
+#     XY = np.reshape(S[:, 0:2], -1)
+#     O = np.tile(center, num_joints)
+#     F = np.tile(f, num_joints)
 
-    # least squares
-    Q = np.array([F*np.tile(np.array([1, 0]), num_joints), F *
-                  np.tile(np.array([0, 1]), num_joints), O-np.reshape(joints_2d, -1)]).T
-    c = (np.reshape(joints_2d, -1)-O)*Z - F*XY
+#     # least squares
+#     Q = np.array([F*np.tile(np.array([1, 0]), num_joints), F *
+#                   np.tile(np.array([0, 1]), num_joints), O-np.reshape(joints_2d, -1)]).T
+#     c = (np.reshape(joints_2d, -1)-O)*Z - F*XY
 
-    # square matrix
-    A = np.dot(Q.T, Q)
-    b = np.dot(Q.T, c)
+#     # square matrix
+#     A = np.dot(Q.T, Q)
+#     b = np.dot(Q.T, c)
 
-    # solution
-    trans = np.linalg.solve(A, b)
+#     # solution
+#     trans = np.linalg.solve(A, b)
 
-    return trans
+#     return trans
 
 
 def estimate_translation(S, joints_2d, focal_length=5000., img_size=224.):

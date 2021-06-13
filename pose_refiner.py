@@ -36,26 +36,44 @@ class Pose_Refiner(nn.Module):
         self.resnet = getattr(models, "resnet18")(pretrained=True)
         # self.resnet = getattr(models, "resnet50")(pretrained=True)
 
-        self.conv1 = nn.Conv2d(6, 64, kernel_size=(
-            7, 7), stride=(2, 2), padding=(3, 3), bias=False)
-        self.bn1 = nn.BatchNorm2d(
-            64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
-
         self.resnet = nn.Sequential(
-            *list(self.resnet.children())[3:-1])
+            *list(self.resnet.children())[:-1])
 
-        self.linear_1 = nn.Linear(self.num_inputs, 512)
+        self.linears = nn.Sequential(
+            nn.Linear(self.num_inputs, 512),
+            nn.ReLU(),
+            Residual_Block(512),
+            Residual_Block(512),
+        )
 
-        self.position_layer = nn.Linear(512+144+10+3, 144)
-        self.shape_layer = nn.Linear(512+144+10+3, 10)
-        self.cam_layer = nn.Linear(512+144+10+3, 3)
+        num_features = 512+144+10+3
+        # num_features = 512
 
-        nn.init.xavier_uniform_(self.position_layer.weight, gain=0.01)
-        nn.init.xavier_uniform_(self.shape_layer.weight, gain=0.01)
-        nn.init.xavier_uniform_(self.cam_layer.weight, gain=0.01)
+        self.final_position_layer = nn.Linear(num_features, 144)
+        self.position_layer = nn.Sequential(
+            Residual_Block(num_features),
+            Residual_Block(num_features),
+            self.final_position_layer
+        )
+        self.final_shape_layer = nn.Linear(num_features, 10)
+        self.shape_layer = nn.Sequential(
+            Residual_Block(num_features),
+            Residual_Block(num_features),
+            self.final_shape_layer
+        )
+        self.final_cam_layer = nn.Linear(num_features, 3)
+        self.cam_layer = nn.Sequential(
+            Residual_Block(num_features),
+            Residual_Block(num_features),
+            self.final_cam_layer
+        )
+
+        # nn.init.xavier_uniform_(self.final_position_layer.weight, gain=0.01)
+        # nn.init.xavier_uniform_(self.final_shape_layer.weight, gain=0.01)
+        # nn.init.xavier_uniform_(self.final_cam_layer.weight, gain=0.01)
 
         self.normalize = transforms.Normalize(
-            (0.475, 0.475, 0.475, 0.485, 0.456, 0.406), (0.225, 0.225, 0.225, 0.229, 0.224, 0.225))
+            (0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
 
         self.img_renderer = Renderer(subset=False)
 
@@ -63,50 +81,49 @@ class Pose_Refiner(nn.Module):
 
         rendered_image = self.img_renderer(batch)
 
-        # drawing = (rendered_image[:, :3]+batch['image']*.5)
-
-        # blt = utils.torch_img_to_np_img(drawing)
-
-        # import matplotlib.pyplot as plt
-        # from matplotlib.patches import Circle
-        # for i in range(blt.shape[0]):
-
-        #     plt.imshow(utils.torch_img_to_np_img(drawing)[i])
-
-        #     ax = plt.gca()
-
-        #     plt.savefig(
-        #         f"output/refining_image_{i:03d}_2.png", dpi=300)
-        #     plt.close()
-
-        # exit()
-
-        final_image = torch.cat([rendered_image[:, :3], batch['image']], dim=1)
+        final_image = .5*rendered_image[:, :3] + .5*batch['image']
 
         final_image = self.normalize(final_image)
 
-        output = self.conv1(final_image)
-        output = self.bn1(output)
+        # final_image = torch.zeros(
+        #     (batch["image"].shape[0], 3, 224, 224)).to(args.device)
 
-        output = nn.ReLU(inplace=True)(output)
-
-        output = self.resnet(output)
+        output = self.resnet(final_image)
 
         output = output.reshape(-1, self.num_inputs)
 
-        output = self.linear_1(output)
-
-        output = nn.ReLU(inplace=True)(output)
+        output = self.linears(output)
 
         output = torch.cat(
             [output, batch["orient"].reshape(-1, 1*6), batch["pose"].reshape(-1, 23*6), batch["betas"], batch["cam"]], dim=1)
 
-        est_pose = self.position_layer(output).reshape(-1, 24, 6) + \
+        est_betas = self.shape_layer(output)/100 + batch["betas"]
+        est_cam = self.cam_layer(output)/100 + batch["cam"]
+
+        est_pose = self.position_layer(output)/100
+        est_pose = est_pose.reshape(-1, 24, 6) + \
             torch.cat([batch["orient"], batch["pose"]], dim=1)
-        est_betas = self.shape_layer(output) + batch["betas"]
-        est_cam = self.cam_layer(output) + batch["cam"]
 
         return est_pose, est_betas, est_cam
+
+
+class Residual_Block(nn.Module):
+    def __init__(self, num_inputs):
+        super(Residual_Block, self).__init__()
+
+        self.linears = nn.Sequential(
+            nn.Linear(num_inputs, num_inputs),
+            nn.ReLU(),
+            nn.Linear(num_inputs, num_inputs),
+        )
+
+    def forward(self, x):
+
+        residual = x
+        x = self.linears(x)
+        x += residual
+        x = nn.ReLU()(x)
+        return x
 
 
 class Pose_Refiner_Translation(nn.Module):

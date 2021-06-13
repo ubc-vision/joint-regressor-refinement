@@ -7,7 +7,7 @@ from tqdm import tqdm
 
 
 from pose_refiner import Pose_Refiner, Pose_Refiner_Translation
-from renderer import Renderer
+from renderer import Renderer, return_2d_joints
 from discriminator import Discriminator
 
 
@@ -52,16 +52,20 @@ def train_pose_refiner_model():
 
     J_regressor = torch.load(
         'models/best_pose_refiner/retrained_J_Regressor.pt').to(args.device)
-    # J_regressor = torch.from_numpy(
-    #     np.load('SPIN/data/J_regressor_h36m.npy')).float().to(args.device)
+    J_regressor_initial = torch.from_numpy(
+        np.load('SPIN/data/J_regressor_h36m.npy')).float().to(args.device)
 
-    num_networks = 5
+    j_reg_mask = utils.find_j_reg_mask(J_regressor_initial)
+
+    num_networks = 1
 
     silhouette_renderer = Renderer(subset=True)
     img_renderer = Renderer(subset=False)
 
     pose_refiners = [Pose_Refiner().to(args.device)
                      for _ in range(num_networks)]
+    # if(args.wandb_log):
+    #     wandb.watch(pose_refiners[0], log_freq=10)
     # checkpoint = torch.load(
     #     "models/pose_refiner_epoch_6.pt", map_location=args.device)
     # pose_refiner.load_state_dict(checkpoint)
@@ -137,7 +141,7 @@ def train_pose_refiner_model():
             # utils.render_batch(img_renderer, batch, "initial")
 
             pred_joints = utils.find_joints(
-                smpl, batch["betas"], pred_rotmat[:, 0].unsqueeze(1), pred_rotmat[:, 1:], J_regressor)
+                smpl, batch["betas"], pred_rotmat[:, 0].unsqueeze(1), pred_rotmat[:, 1:], J_regressor, mask=j_reg_mask)
 
             mpjpe_before_refinement, pampjpe_before_refinement = utils.evaluate(
                 pred_joints, batch['gt_j3d'])
@@ -157,7 +161,7 @@ def train_pose_refiner_model():
                 pred_rotmat = rot6d_to_rotmat(est_pose).view(-1, 24, 3, 3)
 
                 pred_joints = utils.find_joints(
-                    smpl, batch["betas"], pred_rotmat[:, :1], pred_rotmat[:, 1:], J_regressor)
+                    smpl, batch["betas"], pred_rotmat[:, :1], pred_rotmat[:, 1:], J_regressor, mask=j_reg_mask)
 
                 pred_joints = utils.move_pelvis(pred_joints)
 
@@ -169,14 +173,19 @@ def train_pose_refiner_model():
                 discriminated_loss = loss_function(pred_disc, torch.ones(
                     pred_disc.shape).to(args.device))
 
-                rendered_silhouette = silhouette_renderer(batch)
+                # rendered_silhouette = silhouette_renderer(batch)
 
-                rendered_silhouette = rendered_silhouette[:, 3].unsqueeze(1)
+                # rendered_silhouette = rendered_silhouette[:, 3].unsqueeze(1)
 
-                silhouette_loss = loss_function(
-                    rendered_silhouette[batch["valid"]], batch["mask_rcnn"][batch["valid"]])
+                # silhouette_loss = loss_function(
+                #     rendered_silhouette[batch["valid"]], batch["mask_rcnn"][batch["valid"]])
 
-                loss = joint_loss+discriminated_loss/1000+silhouette_loss/100
+                joints_2d = return_2d_joints(
+                    batch, smpl, J_regressor=J_regressor, mask=j_reg_mask)
+
+                loss_2d = loss_function(joints_2d[..., :2], batch["gt_j2d"])
+
+                loss = joint_loss+discriminated_loss/1000+loss_2d/100000
 
                 pose_optimizers[i].zero_grad()
                 loss.backward()
@@ -207,6 +216,7 @@ def train_pose_refiner_model():
                     {
                         "joint_loss": joint_loss.item(),
                         "discriminated_loss": discriminated_loss,
+                        "loss_2d": loss_2d.item(),
                         # "silhouette_loss": silhouette_loss,
                         "discriminator_loss": discriminator_loss,
                         "mpjpe_before_refinement": mpjpe_before_refinement.item(),
@@ -247,7 +257,7 @@ def train_pose_refiner_model():
                     batch["betas"] = pred_betas
 
                     pred_joints = utils.find_joints(
-                        smpl, batch["betas"], pred_rotmat[:, 0].unsqueeze(1), pred_rotmat[:, 1:], J_regressor)
+                        smpl, batch["betas"], pred_rotmat[:, 0].unsqueeze(1), pred_rotmat[:, 1:], J_regressor, mask=j_reg_mask)
 
                     mpjpe_before_refinement, pampjpe_before_refinement = utils.evaluate(
                         pred_joints, batch['gt_j3d'])
@@ -268,7 +278,7 @@ def train_pose_refiner_model():
                         est_pose).view(-1, 24, 3, 3)
 
                     pred_joints = utils.find_joints(
-                        smpl, batch["betas"], pred_rotmat[:, :1], pred_rotmat[:, 1:], J_regressor)
+                        smpl, batch["betas"], pred_rotmat[:, :1], pred_rotmat[:, 1:], J_regressor, mask=j_reg_mask)
 
                     pred_joints = utils.move_pelvis(pred_joints)
 

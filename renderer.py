@@ -22,8 +22,6 @@ from pytorch3d.renderer import look_at_view_transform, PerspectiveCameras, Point
 
 from utils import utils
 
-from torch.nn import functional as F
-
 
 class Renderer(nn.Module):
     # def __init__(self, num_inputs, num_joints):
@@ -95,22 +93,22 @@ class Renderer(nn.Module):
         feat = torch.ones(
             point_cloud.shape[0], point_cloud.shape[1], 4).to(args.device)
 
-        pred_verts_2d = cameras.transform_points_screen(
-            point_cloud, image_size)
+        # pred_verts_2d = cameras.transform_points_screen(
+        #     point_cloud, image_size)
 
-        furthest_point = torch.max(pred_verts_2d[..., 2], dim=1).values
-        closest_point = torch.min(pred_verts_2d[..., 2], dim=1).values
+        # furthest_point = torch.max(pred_verts_2d[..., 2], dim=1).values
+        # closest_point = torch.min(pred_verts_2d[..., 2], dim=1).values
 
-        furthest_point = furthest_point.unsqueeze(
-            -1).expand(point_cloud.shape[:-1])
-        closest_point = closest_point.unsqueeze(
-            -1).expand(point_cloud.shape[:-1])
+        # furthest_point = furthest_point.unsqueeze(
+        #     -1).expand(point_cloud.shape[:-1])
+        # closest_point = closest_point.unsqueeze(
+        #     -1).expand(point_cloud.shape[:-1])
 
-        dist = (pred_verts_2d[..., 2]-closest_point) / \
-            (furthest_point-closest_point)
+        # dist = (pred_verts_2d[..., 2]-closest_point) / \
+        #     (furthest_point-closest_point)
 
-        feat[..., 0] = 1-dist
-        feat[..., 1] = dist
+        # feat[..., 0] = 1-dist
+        # feat[..., 1] = dist
 
         this_point_cloud = Pointclouds(points=point_cloud, features=feat)
 
