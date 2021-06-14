@@ -66,9 +66,9 @@ def train_pose_refiner_model():
                      for _ in range(num_networks)]
     # if(args.wandb_log):
     #     wandb.watch(pose_refiners[0], log_freq=10)
-    # checkpoint = torch.load(
-    #     "models/pose_refiner_epoch_6.pt", map_location=args.device)
-    # pose_refiner.load_state_dict(checkpoint)
+    checkpoint = torch.load(
+        "models/pose_refiner_0_epoch_3.pt", map_location=args.device)
+    pose_refiners[0].load_state_dict(checkpoint)
     for pose_refiner in pose_refiners:
         pose_refiner.train()
 
@@ -302,6 +302,8 @@ def train_pose_refiner_model():
         for i in range(num_networks):
             torch.save(pose_refiners[i].state_dict(),
                        f"models/pose_refiner_{i}_epoch_{epoch}.pt")
+            torch.save(pose_optimizers[i].state_dict(),
+                       f"models/pose_optimizers_{i}_epoch_{epoch}.pt")
 
 
 def train_pose_refiner_translation_model():

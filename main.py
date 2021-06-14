@@ -25,18 +25,18 @@ if __name__ == "__main__":
 
     if(args.wandb_log):
         wandb.init(project="human_body_pose_optimization",
-                   name="testing black input")
+                   name=args.name)
         wandb.config.update(args)
 
     utils.set_seed(0)
 
-    test_pose_refiner_model(0)
+    # test_pose_refiner_model(0)
 
     # for i in range(9):
     #     test_pose_refiner_model(i)
 
     # optimize_pose_refiner()
-    # train_pose_refiner_model()
+    train_pose_refiner_model()
     # test_pose_refiner_model()
     # test_pose_refiner_model_VIBE()
     # optimize_network()

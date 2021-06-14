@@ -37,12 +37,6 @@ from SPIN.models import hmr, SMPL
 import SPIN.config as config
 from SPIN.utils.geometry import rot6d_to_rotmat
 
-import sys  # noqa
-sys.path.append('/scratch/iamerich/VIBE')  # noqa
-
-from lib.utils.demo_utils import download_ckpt
-from lib.models.vibe import VIBE_Demo
-
 # import sys  # noqa
 # sys.path.append('/scratch/iamerich/MEVA')  # noqa
 
@@ -203,6 +197,12 @@ def test_pose_refiner_model(epoch=0):
 
 
 def test_pose_refiner_model_VIBE():
+
+    import sys  # noqa
+    sys.path.append('/scratch/iamerich/VIBE')  # noqa
+
+    from lib.utils.demo_utils import download_ckpt
+    from lib.models.vibe import VIBE_Demo
 
     model = VIBE_Demo(
         seqlen=16,
