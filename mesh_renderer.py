@@ -49,8 +49,8 @@ class Mesh_Renderer(nn.Module):
 
         self.raster_settings = RasterizationSettings(
             image_size=224,
-            blur_radius=np.log(1. / 1e-4 - 1.) * self.blend_params.sigma,
-            faces_per_pixel=10,
+            blur_radius=0.0,
+            faces_per_pixel=1,
         )
 
         verts, faces_idx, _ = load_obj("data/body_model/smpl_uv.obj")
@@ -76,34 +76,37 @@ class Mesh_Renderer(nn.Module):
         # np.save("output/normals.npy", meshes.verts_normals_list()[0].numpy())
         # exit()
 
-        self.faces = torch.stack([self.faces]*args.batch_size).to(args.device)
+        # self.faces = torch.stack([self.faces]*args.batch_size).to(args.device)
 
-    def forward(self, batch, smpl):
+    def forward(self, batch):
 
-        batch_size = batch["pose"].shape[0]
+        batch_size = batch["image"].shape[0]
 
-        focal_length = torch.stack(
-            [batch['intrinsics'][:, 0, 0]/224, batch['intrinsics'][:, 1, 1]/224], dim=1).to(args.device)
-        principal_point = torch.stack(
-            [batch['intrinsics'][:, 0, 2]/-112+1, batch['intrinsics'][:, 1, 2]/-112+1], dim=1)
-        # focal_length = torch.ones(
-        #     batch["image"].shape[0], 2).to(args.device)*5000/224
-        # principal_point = torch.zeros(batch["image"].shape[0], 2).to(args.device)
-
-        pose = rot6d_to_rotmat(
-            batch['pose'].reshape(-1, 6)).reshape(-1, 23, 3, 3)
-        orient = rot6d_to_rotmat(
-            batch['orient'].reshape(-1, 6)).reshape(-1, 1, 3, 3)
-
-        point_cloud = smpl(betas=batch['betas'], body_pose=pose,
-                           global_orient=orient, pose2rot=False).vertices
+        # focal_length = torch.stack(
+        #     [batch['intrinsics'][:, 0, 0]/224, batch['intrinsics'][:, 1, 1]/224], dim=1).to(args.device)
+        # principal_point = torch.stack(
+        #     [batch['intrinsics'][:, 0, 2]/-112+1, batch['intrinsics'][:, 1, 2]/-112+1], dim=1)
+        focal_length = torch.ones(
+            batch["image"].shape[0], 2).to(args.device)*5000/224
+        principal_point = torch.zeros(
+            batch["image"].shape[0], 2).to(args.device)
 
         cameras = PerspectiveCameras(device=args.device, T=batch['cam'],
                                      focal_length=focal_length, principal_point=principal_point)
 
-        point_cloud[:, :, 1] *= -1
-        point_cloud[:, :, 0] *= -1
-        point_cloud *= 2
+        batch["pred_vertices"][:, :, 1] *= -1
+        batch["pred_vertices"][:, :, 0] *= -1
+        batch["pred_vertices"] *= 2
+
+        # image_size = torch.tensor([224, 224]).unsqueeze(
+        #     0).expand(batch['intrinsics'].shape[0], 2).to(args.device)
+
+        # pred_verts_2d = cameras.transform_points_screen(
+        #     batch["pred_vertices"], image_size)
+
+        # print("pred_verts_2d")
+        # print(torch.max(pred_verts_2d))
+        # print(torch.min(pred_verts_2d))
 
         silhouette_renderer = MeshRenderer(
             rasterizer=MeshRasterizer(
@@ -114,8 +117,8 @@ class Mesh_Renderer(nn.Module):
         )
 
         meshes = Meshes(
-            verts=point_cloud,
-            faces=self.faces,
+            verts=batch["pred_vertices"],
+            faces=torch.stack([self.faces]*batch_size).to(args.device),
             textures=self.textures
         )
 

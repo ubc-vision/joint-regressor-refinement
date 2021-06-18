@@ -82,7 +82,7 @@ def angle_between(v1, v2):
     return np.arccos(np.clip(np.dot(v1_u, v2_u), -1.0, 1.0))
 
 
-def find_joints(smpl, shape, orient, pose, J_regressor, mask=None):
+def find_joints(smpl, shape, orient, pose, J_regressor, mask=None, return_verts=False):
 
     if(mask is not None):
         J_regressor = J_regressor*mask
@@ -97,6 +97,9 @@ def find_joints(smpl, shape, orient, pose, J_regressor, mask=None):
         pred_vertices.shape[0], -1, -1).to(pred_vertices.device)
     pred_joints = torch.matmul(J_regressor_batch, pred_vertices)
 
+    if(return_verts):
+        return pred_joints, pred_vertices
+        
     return pred_joints
 
 
@@ -148,9 +151,10 @@ def evaluate(pred_j3ds, target_j3ds):
 
 
 def render_batch(img_renderer, batch, name, j2d=[], vertices=None):
-    rendered_img = img_renderer(batch, vertices)
+    rendered_img = img_renderer(batch)
 
-    drawing = (rendered_img[:, : 3]*.5+batch['image']*.5)
+    drawing = (rendered_img[:, 3:].expand(
+        batch['image'].shape)*.5+batch['image']*.5)
 
     colors = ["r", "g", "b"]
 

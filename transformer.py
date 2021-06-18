@@ -195,6 +195,4 @@ def load_transformer():
         _metro_network.load_state_dict(state_dict, strict=False)
         del state_dict
 
-    _metro_network.to(args.device)
-
     return _metro_network, mesh_smpl, mesh_sampler
