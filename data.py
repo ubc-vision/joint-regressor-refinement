@@ -19,7 +19,7 @@ import pickle
 
 import constants
 
-from pytorch3d.renderer import PerspectiveCameras
+# from pytorch3d.renderer import PerspectiveCameras
 
 from warp import perturbation_helper, sampling_helper
 
@@ -67,18 +67,17 @@ class data_set(Dataset):
                 mask_rcnn = f.get(
                     f"{split_path[0]}/{split_path[1]}/maskSequence/{split_path[3]}/{split_path[4]}")
 
-                image = torch.tensor(image).float()/255.0
+                image = torch.tensor(image).unsqueeze(0)
 
-                mask_rcnn = torch.tensor(mask_rcnn).float()/255.0
+                mask_rcnn = torch.tensor(mask_rcnn).unsqueeze(0)/255.0
+
+                _, min_x, min_y, scale, intrinsics = find_crop_mask(
+                    image, self.bboxes[index].unsqueeze(0), self.intrinsics[index].unsqueeze(0))
 
         else:
-            image = imageio.imread(
-                f"{self.images[index]}")/255.0
-
-            # TODO reimplement
-            # image = image/255.0
-            image = utils.np_img_to_torch_img(image).float(
-            )[:, :constants.IMG_RES, :constants.IMG_RES]
+            image = imageio.imread(f"{self.images[index]}")
+            image = utils.np_img_to_torch_img(image)[:, :constants.IMG_RES, :constants.IMG_RES]
+            image = image.float()/255.0
 
             mask_name = self.images[index].split("imageSequence")
             mask_name = f"{mask_name[0]}maskSequence{mask_name[1]}"
@@ -86,16 +85,18 @@ class data_set(Dataset):
                 f"{mask_name}"), dtype=torch.uint8)
 
             # TODO reimplement
-            mask_rcnn = imageio.imread(f"{mask_name}")/255.0
             mask_rcnn = utils.np_img_to_torch_img(mask_rcnn).float(
-            ).unsqueeze(0)
+            ).unsqueeze(0)/255.0
 
+        
+            image, min_x, min_y, scale, intrinsics = find_crop_mask(
+                image, self.bboxes[index].unsqueeze(0), self.intrinsics[index].unsqueeze(0))
+
+
+        # TODO reimplement
         valid = mask_rcnn[0, 0, 0] != 0
 
         mask_rcnn[:, :2, :2] = 0
-
-        image, min_x, min_y, scale, intrinsics = find_crop_mask(
-            image, self.bboxes[index].unsqueeze(0), self.intrinsics[index].unsqueeze(0))
 
         repositioned_j2d = self.gt_j2d[index].clone()
         repositioned_j2d[..., 0] -= min_x
@@ -111,7 +112,7 @@ class data_set(Dataset):
             "cam": self.estimated_translation[index],
             "gt_j2d": repositioned_j2d,
             "gt_j3d": self.gt_j3d[index],
-            "valid": valid,
+            # "valid": valid,
             "mask_rcnn": mask_rcnn,
             "image": image[0],
             "intrinsics": intrinsics[0],

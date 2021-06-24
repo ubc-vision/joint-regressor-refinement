@@ -88,7 +88,7 @@ class Renderer(nn.Module):
                                      focal_length=focal_length, principal_point=principal_point)
 
         image_size = torch.tensor([224, 224]).unsqueeze(
-            0).expand(batch['intrinsics'].shape[0], 2).to(args.device)
+            0).expand(batch['image'].shape[0], 2).to(args.device)
 
         feat = torch.ones(
             point_cloud.shape[0], point_cloud.shape[1], 4).to(args.device)

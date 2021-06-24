@@ -773,6 +773,8 @@ def train_error_estimator_parametric():
     val_loader = torch.utils.data.DataLoader(
         val_data, batch_size=args.batch_size, num_workers=4, pin_memory=True, shuffle=True, drop_last=True)
 
+    num_optim_iters = 10
+
     normalize = transforms.Normalize(
         (0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
 
@@ -804,17 +806,23 @@ def train_error_estimator_parametric():
 
             spin_image = normalize(batch['image'])
 
-            this_batch_spin = copy.deepcopy(spin).to(args.device)
+            with torch.no_grad():
+                spin_pred_pose, pred_betas, pred_camera = spin(
+                    spin_image)
 
-            this_batch_optim = optim.SGD(
-                this_batch_spin.parameters(), lr=args.opt_lr)
+            spin_pred_pose.requires_grad = True
+
+            this_batch_optim = optim.Adam(
+                [spin_pred_pose], lr=args.opt_lr)
 
             all_pred_vertices = []
             all_gt_errors = []
 
             model.eval()
 
-            for i in range(10):
+            for i in range(num_optim_iters):
+
+                batch["iteration"] = i
 
                 pred_rotmat = rot6d_to_rotmat(
                     spin_pred_pose).view(-1, 24, 3, 3)
@@ -845,10 +853,10 @@ def train_error_estimator_parametric():
                     mpjpe_before, pampjpe_before = utils.evaluate(
                         pred_joints, batch['gt_j3d'])
 
-                    print("mpjpe_before")
-                    print(mpjpe_before)
-                    print("pampjpe_before")
-                    print(pampjpe_before)
+                    # print("mpjpe_before")
+                    # print(mpjpe_before)
+                    # print("pampjpe_before")
+                    # print(pampjpe_before)
 
                 estimated_error = model(batch)
 
@@ -858,7 +866,7 @@ def train_error_estimator_parametric():
 
                 estimated_error = torch.mean(estimated_error)
 
-                print(estimated_error.item())
+                # print(estimated_error.item())
                 this_batch_optim.zero_grad()
                 estimated_error.backward()
                 this_batch_optim.step()
@@ -868,29 +876,43 @@ def train_error_estimator_parametric():
             mpjpe_after, pampjpe_after = utils.evaluate(
                 pred_joints, batch['gt_j3d'])
 
-            # all_pred_vertices = torch.cat(all_pred_vertices, dim=0)
-            # all_gt_errors = torch.cat(all_gt_errors, dim=0)
+            # print("mpjpe_after")
+            # print(mpjpe_after)
+            # print("pampjpe_after")
+            # print(pampjpe_after)
 
-            # error_batch = {
-            #     "image": torch.cat([batch["image"]]*10, dim=0),
-            #     "cam": torch.cat([batch["cam"]]*10, dim=0),
-            #     "intrinsics": torch.cat([batch["intrinsics"]]*10, dim=0),
-            #     "pred_vertices": all_pred_vertices,
-            # }
+            all_pred_vertices = torch.cat(all_pred_vertices, dim=0)
+            all_gt_errors = torch.cat(all_gt_errors, dim=0)
 
-            # estimated_error = model(error_batch)
+            
 
-            # loss = loss_function(estimated_error, all_gt_errors)
+            error_batch = {
+                "image": torch.cat([batch["image"]]*num_optim_iters, dim=0),
+                "cam": torch.cat([batch["cam"]]*num_optim_iters, dim=0),
+                "pred_vertices": all_pred_vertices,
+            }
 
-            # optimizer.zero_grad()
-            # loss.backward()
-            # optimizer.step()
+            estimated_error = model(error_batch)
+
+            # print("torch.mean(all_gt_errors)")
+            # print(torch.mean(all_gt_errors))
+            # print("torch.mean(estimated_error)")
+            # print(torch.mean(estimated_error))
+            # print("mpjpe_after.item()-mpjpe_before.item()")
+            # print(mpjpe_after.item()-mpjpe_before.item())
+            # exit()
+
+            loss = loss_function(estimated_error, all_gt_errors)
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
 
             if(args.wandb_log):
 
                 wandb.log(
                     {
-                        # "loss": loss.item(),
+                        "loss": loss.item(),
                         "mpjpe_before": mpjpe_before.item(),
                         "pampjpe_before": pampjpe_before.item(),
                         "mpjpe_after": mpjpe_after.item(),

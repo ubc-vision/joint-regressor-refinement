@@ -98,17 +98,11 @@ class Error_Estimator(nn.Module):
             rendered_image[:, 3:].expand(
                 batch['image'].shape) + .5*batch['image']
 
-        # print("final_image.shape")
-        # print(final_image.shape)
-
         # import matplotlib.pyplot as plt
         # plt.imshow(utils.torch_img_to_np_img(final_image)[0])
         # itern = batch["iteration"]
         # plt.savefig(f"output/img_{itern}.png")
         # plt.close()
-
-        # import time
-        # time.sleep(2)
 
         final_image = self.normalize(final_image)
 
@@ -119,7 +113,7 @@ class Error_Estimator(nn.Module):
 
         output = output.reshape(-1, self.num_features)
 
-        output = self.linears(output)/10
+        output = self.linears(output)
 
         return output
 
