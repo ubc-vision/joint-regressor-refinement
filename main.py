@@ -30,5 +30,5 @@ if __name__ == "__main__":
 
     utils.set_seed(0)
 
-    train_error_estimator_parametric()
-    # train_pose_refiner_model()
+    # train_error_estimator_parametric()
+    train_pose_refiner_model()

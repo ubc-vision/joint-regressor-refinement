@@ -84,16 +84,16 @@ def angle_between(v1, v2):
 
 def find_joints(smpl, shape, orient, pose, J_regressor, mask=None, return_verts=False):
 
-    if(mask is not None):
-        J_regressor = J_regressor*mask
+    # if(mask is not None):
+    #     J_regressor = J_regressor*mask
 
-    J_regressor_batch = nn.ReLU()(J_regressor)
-    J_regressor_batch = J_regressor_batch / torch.sum(J_regressor_batch, dim=1).unsqueeze(
-        1).expand(J_regressor_batch.shape)
+    # J_regressor_batch = nn.ReLU()(J_regressor)
+    # J_regressor_batch = J_regressor_batch / torch.sum(J_regressor_batch, dim=1).unsqueeze(
+    #     1).expand(J_regressor_batch.shape)
 
     pred_vertices = smpl(global_orient=orient, body_pose=pose,
                          betas=shape, pose2rot=False).vertices
-    J_regressor_batch = J_regressor_batch[None, :].expand(
+    J_regressor_batch = J_regressor[None, :].expand(
         pred_vertices.shape[0], -1, -1).to(pred_vertices.device)
     pred_joints = torch.matmul(J_regressor_batch, pred_vertices)
 

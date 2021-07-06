@@ -71,6 +71,7 @@ class Error_Estimator(nn.Module):
 
         self.num_features = 512
         self.num_joints = 17
+        self.num_nodes_per_joint = 10
 
         self.resnet = getattr(models, "resnet18")(
             pretrained=True, norm_layer=FrozenBatchNorm2d)
@@ -82,7 +83,7 @@ class Error_Estimator(nn.Module):
         self.linears = nn.Sequential(
             Residual_Block(self.num_features),
             Residual_Block(self.num_features),
-            nn.Linear(self.num_features, 17)
+            nn.Linear(self.num_features, self.num_joints*self.num_nodes_per_joint)
         )
 
         self.normalize = transforms.Normalize(
@@ -94,9 +95,13 @@ class Error_Estimator(nn.Module):
 
         rendered_image = self.img_renderer(batch)
 
+        # rendered_image = torch.ones(rendered_image.shape).to(args.device)
+
         final_image = .5 * \
             rendered_image[:, 3:].expand(
                 batch['image'].shape) + .5*batch['image']
+
+        
 
         # import matplotlib.pyplot as plt
         # plt.imshow(utils.torch_img_to_np_img(final_image)[0])
@@ -115,6 +120,12 @@ class Error_Estimator(nn.Module):
 
         output = self.linears(output)
 
+        output = output.reshape(-1, self.num_joints, self.num_nodes_per_joint)
+
+        output = torch.norm(output, dim=-1)
+
+        output = output/10
+
         return output
 
 
@@ -124,10 +135,10 @@ class Residual_Block(nn.Module):
 
         self.linears = nn.Sequential(
             nn.Linear(num_inputs, num_inputs),
-            nn.BatchNorm1d(num_inputs),
+            # nn.BatchNorm1d(num_inputs),
             nn.ReLU(),
             nn.Linear(num_inputs, num_inputs),
-            nn.BatchNorm1d(num_inputs),
+            # nn.BatchNorm1d(num_inputs),
         )
 
     def forward(self, x):

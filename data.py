@@ -85,8 +85,7 @@ class data_set(Dataset):
                 f"{mask_name}"), dtype=torch.uint8)
 
             # TODO reimplement
-            mask_rcnn = utils.np_img_to_torch_img(mask_rcnn).float(
-            ).unsqueeze(0)/255.0
+            mask_rcnn = mask_rcnn.float().unsqueeze(0)/255.0
 
         
             image, min_x, min_y, scale, intrinsics = find_crop_mask(

@@ -6,7 +6,7 @@ from torch import nn, optim
 from tqdm import tqdm
 
 
-from pose_refiner import Pose_Refiner, Pose_Refiner_Translation
+from pose_refiner import Pose_Refiner
 from renderer import Renderer, return_2d_joints
 from mesh_renderer import Mesh_Renderer
 from discriminator import Discriminator
@@ -51,12 +51,12 @@ def train_pose_refiner_model():
         batch_size=1,
     ).to(args.device)
 
-    J_regressor = torch.load(
-        'models/best_pose_refiner/retrained_J_Regressor.pt').to(args.device)
-    J_regressor_initial = torch.from_numpy(
+    # J_regressor = torch.load(
+    #     'models/best_pose_refiner/retrained_J_Regressor.pt').to(args.device)
+    J_regressor = torch.from_numpy(
         np.load('SPIN/data/J_regressor_h36m.npy')).float().to(args.device)
 
-    j_reg_mask = utils.find_j_reg_mask(J_regressor_initial)
+    # j_reg_mask = utils.find_j_reg_mask(J_regressor)
 
     num_networks = 1
 
@@ -67,9 +67,9 @@ def train_pose_refiner_model():
                      for _ in range(num_networks)]
     # if(args.wandb_log):
     #     wandb.watch(pose_refiners[0], log_freq=10)
-    checkpoint = torch.load(
-        "models/pose_refiner_0_epoch_3.pt", map_location=args.device)
-    pose_refiners[0].load_state_dict(checkpoint)
+    # checkpoint = torch.load(
+    #     "models/pose_refiner_0_epoch_3.pt", map_location=args.device)
+    # pose_refiners[0].load_state_dict(checkpoint)
     for pose_refiner in pose_refiners:
         pose_refiner.train()
 
@@ -146,7 +146,7 @@ def train_pose_refiner_model():
             # utils.render_batch(img_renderer, batch, "initial")
 
             pred_joints = utils.find_joints(
-                smpl, batch["betas"], pred_rotmat[:, 0].unsqueeze(1), pred_rotmat[:, 1:], J_regressor, mask=j_reg_mask)
+                smpl, batch["betas"], pred_rotmat[:, 0].unsqueeze(1), pred_rotmat[:, 1:], J_regressor)
 
             mpjpe_before_refinement, pampjpe_before_refinement = utils.evaluate(
                 pred_joints, batch['gt_j3d'])
@@ -166,7 +166,7 @@ def train_pose_refiner_model():
                 pred_rotmat = rot6d_to_rotmat(est_pose).view(-1, 24, 3, 3)
 
                 pred_joints = utils.find_joints(
-                    smpl, batch["betas"], pred_rotmat[:, :1], pred_rotmat[:, 1:], J_regressor, mask=j_reg_mask)
+                    smpl, batch["betas"], pred_rotmat[:, :1], pred_rotmat[:, 1:], J_regressor)
 
                 pred_joints = utils.move_pelvis(pred_joints)
 
@@ -186,7 +186,7 @@ def train_pose_refiner_model():
                 #     rendered_silhouette[batch["valid"]], batch["mask_rcnn"][batch["valid"]])
 
                 joints_2d = return_2d_joints(
-                    batch, smpl, J_regressor=J_regressor, mask=j_reg_mask)
+                    batch, smpl, J_regressor=J_regressor)
 
                 loss_2d = loss_function(joints_2d[..., :2], batch["gt_j2d"])
 
@@ -262,7 +262,7 @@ def train_pose_refiner_model():
                     batch["betas"] = pred_betas
 
                     pred_joints = utils.find_joints(
-                        smpl, batch["betas"], pred_rotmat[:, 0].unsqueeze(1), pred_rotmat[:, 1:], J_regressor, mask=j_reg_mask)
+                        smpl, batch["betas"], pred_rotmat[:, 0].unsqueeze(1), pred_rotmat[:, 1:], J_regressor)
 
                     mpjpe_before_refinement, pampjpe_before_refinement = utils.evaluate(
                         pred_joints, batch['gt_j3d'])
@@ -283,7 +283,7 @@ def train_pose_refiner_model():
                         est_pose).view(-1, 24, 3, 3)
 
                     pred_joints = utils.find_joints(
-                        smpl, batch["betas"], pred_rotmat[:, :1], pred_rotmat[:, 1:], J_regressor, mask=j_reg_mask)
+                        smpl, batch["betas"], pred_rotmat[:, :1], pred_rotmat[:, 1:], J_regressor)
 
                     pred_joints = utils.move_pelvis(pred_joints)
 
@@ -783,13 +783,18 @@ def train_error_estimator_parametric():
         iterator = iter(loader)
         val_iterator = iter(val_loader)
 
-        batch = next(iterator)
+        this_batch = next(iterator)
+        # batch = next(iterator)
 
-        for item in batch:
-            if(item != "valid" and item != "path" and item != "pixel_annotations"):
-                batch[item] = batch[item].to(args.device).float()
+        
 
         for iteration in tqdm(range(len(loader))):
+
+            batch = copy.deepcopy(this_batch)
+
+            for item in batch:
+                if(item != "valid" and item != "path" and item != "pixel_annotations"):
+                    batch[item] = batch[item].to(args.device).float()
 
             # try:
             #     batch = next(iterator)
@@ -840,6 +845,10 @@ def train_error_estimator_parametric():
                     mask=j_reg_mask,
                     return_verts=True)
 
+                pred_verts[:, :, 1] *= -1
+                pred_verts[:, :, 0] *= -1
+                pred_verts *= 2
+
                 batch["pred_vertices"] = pred_verts
 
                 pred_cam_t = torch.stack([-2*pred_camera[:, 1],
@@ -853,11 +862,6 @@ def train_error_estimator_parametric():
                     mpjpe_before, pampjpe_before = utils.evaluate(
                         pred_joints, batch['gt_j3d'])
 
-                    # print("mpjpe_before")
-                    # print(mpjpe_before)
-                    # print("pampjpe_before")
-                    # print(pampjpe_before)
-
                 estimated_error = model(batch)
 
                 gt_errors = torch.sqrt(((pred_joints - batch["gt_j3d"]/1000) **
@@ -866,7 +870,6 @@ def train_error_estimator_parametric():
 
                 estimated_error = torch.mean(estimated_error)
 
-                # print(estimated_error.item())
                 this_batch_optim.zero_grad()
                 estimated_error.backward()
                 this_batch_optim.step()
@@ -883,24 +886,16 @@ def train_error_estimator_parametric():
 
             all_pred_vertices = torch.cat(all_pred_vertices, dim=0)
             all_gt_errors = torch.cat(all_gt_errors, dim=0)
-
             
 
             error_batch = {
                 "image": torch.cat([batch["image"]]*num_optim_iters, dim=0),
                 "cam": torch.cat([batch["cam"]]*num_optim_iters, dim=0),
                 "pred_vertices": all_pred_vertices,
+                "iteration": 99,
             }
 
             estimated_error = model(error_batch)
-
-            # print("torch.mean(all_gt_errors)")
-            # print(torch.mean(all_gt_errors))
-            # print("torch.mean(estimated_error)")
-            # print(torch.mean(estimated_error))
-            # print("mpjpe_after.item()-mpjpe_before.item()")
-            # print(mpjpe_after.item()-mpjpe_before.item())
-            # exit()
 
             loss = loss_function(estimated_error, all_gt_errors)
 
@@ -920,6 +915,7 @@ def train_error_estimator_parametric():
                         "mpjpe_difference": mpjpe_after.item()-mpjpe_before.item(),
                         "pampjpe_difference": pampjpe_after.item()-pampjpe_before.item(), })
 
+        exit()
         print(f"epoch {epoch}")
         torch.save(model.state_dict(),
                    f"models/transformer_refiner_epoch_{epoch}.pt")

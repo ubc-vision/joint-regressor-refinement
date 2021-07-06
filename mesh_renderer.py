@@ -94,10 +94,6 @@ class Mesh_Renderer(nn.Module):
         cameras = PerspectiveCameras(device=args.device, T=batch['cam'],
                                      focal_length=focal_length, principal_point=principal_point)
 
-        batch["pred_vertices"][:, :, 1] *= -1
-        batch["pred_vertices"][:, :, 0] *= -1
-        batch["pred_vertices"] *= 2
-
         # image_size = torch.tensor([224, 224]).unsqueeze(
         #     0).expand(batch['intrinsics'].shape[0], 2).to(args.device)
 
