@@ -7,8 +7,9 @@ import torch
 # from crop_model import Crop_Model
 
 # from render_model import Render_Model
-from train import train_error_estimator, train_pose_refiner_model, train_error_estimator_parametric
-from test import test_pose_refiner_model, test_pose_refiner_model_VIBE, test_pose_refiner_translation_model
+from train import train_pose_refiner_model, train_pose_refiner_offset
+from test import test_pose_refiner_model, test_pose_refiner_model_VIBE_MEVA, test_pose_refiner_offset
+from optimize import optimize_pose_refiner
 
 from utils import utils
 
@@ -30,5 +31,31 @@ if __name__ == "__main__":
 
     utils.set_seed(0)
 
+    # train_transformer_refiner()
+
     # train_error_estimator_parametric()
-    train_pose_refiner_model()
+
+    # optimize_pose_refiner()
+    # test_pose_refiner_model()
+    # exit()
+
+    # train_pose_refiner_model()
+    # exit()
+    # train_pose_refiner_offset()
+
+    # test_pose_refiner_model()
+    # test_pose_refiner_model_VIBE_MEVA(VIBE=True)
+    optimize_pose_refiner()
+    # exit()
+
+    # test_pose_refiner_offset()
+
+    # for i in range(5):
+    #     # train_pose_refiner_model()
+    #     train_pose_refiner_offset()
+
+    #     test_pose_refiner_offset()
+
+    # for i in range(1, -1, -1):
+    #     print(f"testing {i}")
+    #     test_pose_refiner_model(i)

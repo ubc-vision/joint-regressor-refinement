@@ -40,15 +40,17 @@ from torch.nn import functional as F
 
 class Mesh_Renderer(nn.Module):
     # def __init__(self, num_inputs, num_joints):
-    def __init__(self):
+    def __init__(self, image_size=256):
         super(Mesh_Renderer, self).__init__()
 
         self.blend_params = BlendParams(sigma=1e-4, gamma=1e-4)
 
+        self.image_size = image_size
+
         # self.cameras = FoVPerspectiveCameras(device=args.device)
 
         self.raster_settings = RasterizationSettings(
-            image_size=224,
+            image_size=image_size,
             blur_radius=0.0,
             faces_per_pixel=1,
         )
@@ -83,18 +85,18 @@ class Mesh_Renderer(nn.Module):
         batch_size = batch["image"].shape[0]
 
         # focal_length = torch.stack(
-        #     [batch['intrinsics'][:, 0, 0]/224, batch['intrinsics'][:, 1, 1]/224], dim=1).to(args.device)
+        #     [batch['intrinsics'][:, 0, 0]/self.image_size, batch['intrinsics'][:, 1, 1]/self.image_size], dim=1).to(args.device)
         # principal_point = torch.stack(
         #     [batch['intrinsics'][:, 0, 2]/-112+1, batch['intrinsics'][:, 1, 2]/-112+1], dim=1)
         focal_length = torch.ones(
-            batch["image"].shape[0], 2).to(args.device)*5000/224
+            batch["image"].shape[0], 2).to(args.device)*5000/self.image_size
         principal_point = torch.zeros(
             batch["image"].shape[0], 2).to(args.device)
 
         cameras = PerspectiveCameras(device=args.device, T=batch['cam'],
                                      focal_length=focal_length, principal_point=principal_point)
 
-        # image_size = torch.tensor([224, 224]).unsqueeze(
+        # image_size = torch.tensor([self.image_size, self.image_size]).unsqueeze(
         #     0).expand(batch['intrinsics'].shape[0], 2).to(args.device)
 
         # pred_verts_2d = cameras.transform_points_screen(
@@ -111,6 +113,9 @@ class Mesh_Renderer(nn.Module):
             ),
             shader=SoftSilhouetteShader(blend_params=self.blend_params)
         )
+
+        # batch["pred_vertices"] *= 2
+        # batch["pred_vertices"][..., :2] *= -1`
 
         meshes = Meshes(
             verts=batch["pred_vertices"],

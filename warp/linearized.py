@@ -103,7 +103,7 @@ class LinearizedMutilSampler():
     NUM_XY = 2
     noise_strength = 0.5
     need_push_away = True
-    fixed_bias = False
+    fixed_bias = True
     is_hyperparameters_set = False
 
     @classmethod

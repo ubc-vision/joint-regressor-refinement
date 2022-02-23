@@ -1,3 +1,4 @@
+from math import e
 import torch
 from torch import nn, optim
 from torch.utils.data import Dataset
@@ -30,28 +31,61 @@ class data_set(Dataset):
     def __init__(self, set):
 
         if(set == "train"):
-            location = "data/human3.6m/precomputed_train/"
+            locations = ["data/human3.6m/precomputed_train/"]
+            #  "data/human3.6m/precomputed_val/"]
         else:
-            location = "data/human3.6m/precomputed_val/"
+            locations = ["data/human3.6m/precomputed_val/"]
 
-        self.bboxes = torch.load(
-            f"{location}bboxes.pt", map_location="cpu")
-        self.betas = torch.load(
-            f"{location}betas.pt", map_location="cpu")
-        self.estimated_translation = torch.load(
-            f"{location}estimated_translation.pt", map_location="cpu")
-        self.gt_j2d = torch.load(
-            f"{location}gt_j2d.pt", map_location="cpu")
-        self.gt_j3d = torch.load(
-            f"{location}gt_j3d.pt", map_location="cpu")
-        self.images = pickle.load(open(f"{location}images.pkl", 'rb'))
-        self.intrinsics = torch.load(
-            f"{location}intrinsics.pt", map_location="cpu")
-        self.orient = torch.load(
-            f"{location}orient.pt", map_location="cpu")
-        self.pixel_annotations = pickle.load(
-            open(f"{location}pixel_annotations.pkl", 'rb'))
-        self.pose = torch.load(f"{location}pose.pt", map_location="cpu")
+        self.bboxes = []
+        self.betas = []
+        self.estimated_translation = []
+        self.gt_j2d = []
+        self.gt_j3d = []
+        self.images = []
+        self.intrinsics = []
+        self.orient = []
+        self.pixel_annotations = []
+        self.pose = []
+        self.inc_gt = []
+
+        for index, location in enumerate(locations):
+            self.bboxes.append(torch.load(
+                f"{location}bboxes.pt", map_location="cpu"))
+            self.betas.append(torch.load(
+                f"{location}betas.pt", map_location="cpu"))
+            self.estimated_translation.append(torch.load(
+                f"{location}estimated_translation.pt", map_location="cpu"))
+            self.gt_j2d.append(torch.load(
+                f"{location}gt_j2d.pt", map_location="cpu"))
+            self.gt_j3d.append(torch.load(
+                f"{location}gt_j3d.pt", map_location="cpu"))
+            self.images.extend(pickle.load(
+                open(f"{location}images.pkl", 'rb')))
+            self.intrinsics.append(torch.load(
+                f"{location}intrinsics.pt", map_location="cpu"))
+            self.orient.append(torch.load(
+                f"{location}orient.pt", map_location="cpu"))
+            self.pixel_annotations.extend(pickle.load(
+                open(f"{location}pixel_annotations.pkl", 'rb')))
+            self.pose.append(torch.load(
+                f"{location}pose.pt", map_location="cpu"))
+
+            if(index == 1):
+                inc_gt = torch.zeros(self.gt_j3d[-1].shape[0])
+            else:
+                inc_gt = torch.ones(self.gt_j3d[0].shape[0])
+            self.inc_gt.append(inc_gt)
+
+        self.bboxes = torch.cat(self.bboxes, dim=0)
+        self.betas = torch.cat(self.betas, dim=0)
+        self.estimated_translation = torch.cat(
+            self.estimated_translation, dim=0)
+        self.gt_j2d = torch.cat(self.gt_j2d, dim=0)
+        self.gt_j3d = torch.cat(self.gt_j3d, dim=0)
+        self.intrinsics = torch.cat(self.intrinsics, dim=0)
+        self.orient = torch.cat(self.orient, dim=0)
+        self.pose = torch.cat(self.pose, dim=0)
+        self.inc_gt = torch.cat(self.inc_gt, dim=0).type(torch.bool)
 
         # self.h5py = h5py.File('data/human3.6m/data.h5', 'r')
 
@@ -71,12 +105,13 @@ class data_set(Dataset):
 
                 mask_rcnn = torch.tensor(mask_rcnn).unsqueeze(0)/255.0
 
-                _, min_x, min_y, scale, intrinsics = find_crop_mask(
+                _, min_x, min_y, scale, intrinsics = find_crop(
                     image, self.bboxes[index].unsqueeze(0), self.intrinsics[index].unsqueeze(0))
 
         else:
             image = imageio.imread(f"{self.images[index]}")
-            image = utils.np_img_to_torch_img(image)[:, :constants.IMG_RES, :constants.IMG_RES]
+            image = utils.np_img_to_torch_img(
+                image)[:, :constants.IMG_RES, :constants.IMG_RES]
             image = image.float()/255.0
 
             mask_name = self.images[index].split("imageSequence")
@@ -87,10 +122,11 @@ class data_set(Dataset):
             # TODO reimplement
             mask_rcnn = mask_rcnn.float().unsqueeze(0)/255.0
 
-        
-            image, min_x, min_y, scale, intrinsics = find_crop_mask(
-                image, self.bboxes[index].unsqueeze(0), self.intrinsics[index].unsqueeze(0))
+            spin_image, _, _, _, _ = find_crop(
+                image, self.bboxes[index].unsqueeze(0), self.intrinsics[index].unsqueeze(0), img_size=224)
 
+            image_crop, min_x, min_y, scale, intrinsics = find_crop(
+                image, self.bboxes[index].unsqueeze(0), self.intrinsics[index].unsqueeze(0))
 
         # TODO reimplement
         valid = mask_rcnn[0, 0, 0] != 0
@@ -101,7 +137,7 @@ class data_set(Dataset):
         repositioned_j2d[..., 0] -= min_x
         repositioned_j2d[..., 1] -= min_y
         repositioned_j2d /= scale
-        repositioned_j2d /= 1000/224
+        repositioned_j2d /= 1000/256
 
         output_dict = {
             # "image_name": self.images[index],
@@ -111,13 +147,16 @@ class data_set(Dataset):
             "cam": self.estimated_translation[index],
             "gt_j2d": repositioned_j2d,
             "gt_j3d": self.gt_j3d[index],
-            # "valid": valid,
+            "valid": valid,
             "mask_rcnn": mask_rcnn,
-            "image": image[0],
+            "image": image_crop[0],
+            # "og_image": image,
+            "spin_image": spin_image[0],
             "intrinsics": intrinsics[0],
             "orient": self.orient[index],
-            "pixel_annotations": self.pixel_annotations[index],
+            # "pixel_annotations": self.pixel_annotations[index],
             "pose": self.pose[index],
+            "inc_gt": self.inc_gt[index],
         }
 
         return output_dict
@@ -126,61 +165,61 @@ class data_set(Dataset):
         return len(self.images)
 
 
-def find_crop(image, joints_2d, intrinsics):
+# def find_crop(image, joints_2d, intrinsics):
 
-    batch_size = joints_2d.shape[0]
-    min_x = torch.min(joints_2d[..., 0], dim=1)[0]
-    max_x = torch.max(joints_2d[..., 0], dim=1)[0]
-    min_y = torch.min(joints_2d[..., 1], dim=1)[0]
-    max_y = torch.max(joints_2d[..., 1], dim=1)[0]
+#     batch_size = joints_2d.shape[0]
+#     min_x = torch.min(joints_2d[..., 0], dim=1)[0]
+#     max_x = torch.max(joints_2d[..., 0], dim=1)[0]
+#     min_y = torch.min(joints_2d[..., 1], dim=1)[0]
+#     max_y = torch.max(joints_2d[..., 1], dim=1)[0]
 
-    min_x = (min_x-500)/500
-    max_x = (max_x-500)/500
-    min_y = (min_y-500)/500
-    max_y = (max_y-500)/500
+#     min_x = (min_x-500)/500
+#     max_x = (max_x-500)/500
+#     min_y = (min_y-500)/500
+#     max_y = (max_y-500)/500
 
-    average_x = (min_x+max_x)/2
-    average_y = (min_y+max_y)/2
+#     average_x = (min_x+max_x)/2
+#     average_y = (min_y+max_y)/2
 
-    scale_x = (max_x-min_x)*1.2
-    scale_y = (max_y-min_y)*1.2
+#     scale_x = (max_x-min_x)*1.2
+#     scale_y = (max_y-min_y)*1.2
 
-    scale = torch.where(scale_x > scale_y, scale_x, scale_y)
+#     scale = torch.where(scale_x > scale_y, scale_x, scale_y)
 
-    # print(scale[:3])
-    # print(average_x[:3])
+#     # print(scale[:3])
+#     # print(average_x[:3])
 
-    scale /= 2
+#     scale /= 2
 
-    min_x = (average_x-scale)*500+500
-    min_y = (average_y-scale)*500+500
+#     min_x = (average_x-scale)*500+500
+#     min_y = (average_y-scale)*500+500
 
-    zeros = torch.zeros(batch_size).to(image.device)
-    ones = torch.ones(batch_size).to(image.device)
+#     zeros = torch.zeros(batch_size).to(image.device)
+#     ones = torch.ones(batch_size).to(image.device)
 
-    bilinear_sampler = sampling_helper.DifferentiableImageSampler(
-        'bilinear', 'zeros')
+#     bilinear_sampler = sampling_helper.DifferentiableImageSampler(
+#         'bilinear', 'zeros')
 
-    vec = torch.stack([zeros, scale, scale, average_x /
-                       scale, average_y/scale], dim=1)
+#     vec = torch.stack([zeros, scale, scale, average_x /
+#                        scale, average_y/scale], dim=1)
 
-    average_x = (average_x)*500+500
-    average_y = (average_y)*500+500
+#     average_x = (average_x)*500+500
+#     average_y = (average_y)*500+500
 
-    transformation_mat = perturbation_helper.vec2mat_for_similarity(vec)
+#     transformation_mat = perturbation_helper.vec2mat_for_similarity(vec)
 
-    image = bilinear_sampler.warp_image(
-        image, transformation_mat, out_shape=[224, 224]).contiguous()
+#     image = bilinear_sampler.warp_image(
+#         image, transformation_mat, out_shape=[224, 224]).contiguous()
 
-    intrinsics = crop_intrinsics(
-        intrinsics, 1000*scale, 1000*scale, average_y, average_x)
-    intrinsics = resize_intrinsics(
-        intrinsics, 1000*scale, 1000*scale, 224/(scale*1000))
+#     intrinsics = crop_intrinsics(
+#         intrinsics, 1000*scale, 1000*scale, average_y, average_x)
+#     intrinsics = resize_intrinsics(
+#         intrinsics, 1000*scale, 1000*scale, 224/(scale*1000))
 
-    return image, min_x, min_y, scale, intrinsics
+#     return image, min_x, min_y, scale, intrinsics
 
 
-def find_crop_mask(image, mask, intrinsics):
+def find_crop(image, mask, intrinsics, img_size=256):
 
     batch_size = mask.shape[0]
     min_x = mask[:, 1]
@@ -224,12 +263,12 @@ def find_crop_mask(image, mask, intrinsics):
     transformation_mat = perturbation_helper.vec2mat_for_similarity(vec)
 
     image = bilinear_sampler.warp_image(
-        image, transformation_mat, out_shape=[224, 224]).contiguous()
+        image, transformation_mat, out_shape=[img_size, img_size]).contiguous()
 
     intrinsics = crop_intrinsics(
         intrinsics, 1000*scale, 1000*scale, average_y, average_x)
     intrinsics = resize_intrinsics(
-        intrinsics, 1000*scale, 1000*scale, 224/(scale*1000))
+        intrinsics, 1000*scale, 1000*scale, img_size/(scale*1000))
 
     return image, min_x, min_y, scale, intrinsics
 
