@@ -46,6 +46,103 @@ import copy
 from mult_layer_jreg import DL_JReg
 
 
+def eval(render, mask_rcnn):
+
+    render = torch.where(render > 0.5, torch.ones_like(render), torch.zeros_like(render))
+
+    mask_rcnn = torch.where(mask_rcnn > 0.5, torch.ones_like(mask_rcnn), torch.zeros_like(mask_rcnn))
+
+    intersection = torch.where(mask_rcnn+render == 2, torch.ones_like(mask_rcnn), torch.zeros_like(mask_rcnn))
+    union = torch.where(mask_rcnn+render > 0, torch.ones_like(mask_rcnn), torch.zeros_like(mask_rcnn))
+
+    return intersection.sum().item()/union.sum().item()
+
+
+
+
+
+def viz(render, mask_rcnn, image, gt_joints_2d, spin_joints_2d, joints_2d, name):
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Circle
+
+    batch_size = render.shape[0]
+
+    # render = 1-render
+
+    render = torch.where(render > 0.5, torch.ones_like(render), torch.zeros_like(render))
+
+    render = render.expand(batch_size, 3, 224, 224)
+
+    # mask_rcnn = 1-mask_rcnn
+    mask_rcnn = torch.where(mask_rcnn > 0.8, torch.ones_like(mask_rcnn), torch.zeros_like(mask_rcnn))
+
+    mask_rcnn = mask_rcnn.expand(batch_size, 3, 224, 224)
+
+    # print("truth.shape")
+    # print(truth.shape)
+    # print(truth)
+    # exit()
+
+    # intersection = torch.where(mask_rcnn+render == 2, torch.ones_like(mask_rcnn), torch.zeros_like(mask_rcnn))
+    intersection = torch.where(mask_rcnn+render == 1, torch.ones_like(mask_rcnn), torch.zeros_like(mask_rcnn))
+
+    # print("render.shape")
+    # print(render.shape)
+    # exit()
+
+    render = utils.torch_img_to_np_img(render)
+    mask_rcnn = utils.torch_img_to_np_img(mask_rcnn)
+    image = utils.torch_img_to_np_img(image)
+    intersection = utils.torch_img_to_np_img(intersection)
+
+    gt_joints_2d = gt_joints_2d.cpu().detach().numpy()
+    spin_joints_2d = spin_joints_2d.cpu().detach().numpy()
+    joints_2d = joints_2d.cpu().detach().numpy()
+
+    
+
+
+    for i in range(render.shape[0]):
+        # plt.imshow(render[i]+image[i])
+        plt.imshow(intersection[i])
+
+        # # plt.scatter(gt_joints_2d[i, :, 0], gt_joints_2d[i, :, 1], s=10, c='r')
+        plt.scatter(spin_joints_2d[i, :, 0], spin_joints_2d[i, :, 1], s=10, c='g')
+        # plt.scatter(joints_2d[i, :, 0], joints_2d[i, :, 1], s=10, c='b')
+
+        ax = plt.gca()
+
+        plt.savefig(
+            f"output/{i:03d}_render_{name}.png", dpi=300)
+        plt.close()
+
+        plt.imshow(mask_rcnn[i])
+
+        ax = plt.gca()
+
+        plt.savefig(
+            f"output/{i:03d}_silhouette_{name}.png", dpi=300)
+        plt.close()
+
+        # plt.imshow(image[i])
+
+        # ax = plt.gca()
+
+        # plt.savefig(
+        #     f"output/{i:03d}_image_{name}.png", dpi=300)
+        # plt.close()
+
+def render_mesh(smpl, silhouette_renderer, betas, orient, pose, batch):
+    pred_vertices = smpl(global_orient=orient, body_pose=pose,
+                    betas=betas, pose2rot=False).vertices
+    pred_vertices[:, :, 1] *= -1
+    pred_vertices[:, :, 0] *= -1
+    pred_vertices *= 2
+    img = silhouette_renderer(batch, pred_vertices)[:, 3].unsqueeze(1)
+
+    return img
+
+
 def optimize_pose_refiner():
 
     spin_model = hmr(config.SMPL_MEAN_PARAMS).to(args.device)
@@ -66,14 +163,25 @@ def optimize_pose_refiner():
     # new_J_regressor = torch.load(
     #     "models/retrained_J_Regressor.pt").to(args.device)
 
-    J_reg = torch.from_numpy(
+    # J_reg = torch.from_numpy(
+    #     np.load('SPIN/data/J_regressor_h36m.npy')).float().to(args.device)
+    # J_regressor = DL_JReg(J_reg)
+    # checkpoint = torch.load(
+    #     "models/retrained_J_Regressor.pt", map_location=args.device)
+    # J_regressor.load_state_dict(checkpoint)
+    # J_regressor.eval()
+    # J_regressor_retrained = DL_JReg(J_reg.clone())
+
+    SPIN_J_regressor = torch.from_numpy(
         np.load('SPIN/data/J_regressor_h36m.npy')).float().to(args.device)
-    J_regressor = DL_JReg(J_reg)
-    checkpoint = torch.load(
-        "models/retrained_J_Regressor.pt", map_location=args.device)
-    J_regressor.load_state_dict(checkpoint)
-    J_regressor.eval()
-    J_regressor_retrained = DL_JReg(J_reg.clone())
+    J_regressor = torch.load(
+        'models/reretrained_J_Regressor.pt').to(args.device).detach()
+    J_regressor_retrained = torch.load(
+        'models/retrained_J_Regressor.pt').to(args.device).detach()
+    # J_regressor_retrained = torch.load(
+    #     "models/best_pose_refiner/retrained_J_Regressor.pt", map_location=args.device)
+    J_regressor_retrained.requires_grad = True
+    
 
     
 
@@ -88,44 +196,45 @@ def optimize_pose_refiner():
     #     points_per_pixel=10
     # )
 
-    # silhouette_renderer = Renderer(subset=True)
+    # silhouette_renderer = Renderer(subset=True, image_size=224)
     # img_renderer = Renderer(subset=False)
     silhouette_renderer = Mesh_Renderer(image_size=224)
+    # viz_renderer = Mesh_Renderer(image_size=256)
     # silhouette_renderer = nn.DataParallel(silhouette_renderer)
 
     pose_discriminator = Discriminator().to(args.device)
-    # checkpoint = torch.load(
-    #     "models/best_pose_refiner/opt_disc.pt", map_location=args.device)
-    # checkpoint = torch.load(
-    #     "models/pose_discriminator_epoch_0.pt", map_location=args.device)
-
-    # pose_discriminator.load_state_dict(checkpoint)
+    checkpoint = torch.load(
+        "models/pose_discriminator.pt", map_location=args.device)
+    pose_discriminator.load_state_dict(checkpoint)
     pose_discriminator.train()
 
     disc_optimizer = optim.Adam(
         pose_discriminator.parameters(), lr=args.opt_disc_learning_rate)
-    # checkpoint = torch.load(
-    #     "models/best_pose_refiner/opt_disc_optim.pt", map_location=args.device)
-    # disc_optimizer.load_state_dict(checkpoint)
+    checkpoint = torch.load(
+        "models/disc_optimizer.pt", map_location=args.device)
+    disc_optimizer.load_state_dict(checkpoint)
 
     shape_discriminator = Shape_Discriminator().to(args.device)
-    # checkpoint = torch.load(
-    #     "models/shape_discriminator_epoch_0.pt", map_location=args.device)
-
-    # shape_discriminator.load_state_dict(checkpoint)
-
+    checkpoint = torch.load(
+        "models/shape_discriminator.pt", map_location=args.device)
+    shape_discriminator.load_state_dict(checkpoint)
     shape_discriminator.train()
+     
     shape_disc_optimizer = optim.Adam(
         shape_discriminator.parameters(), lr=args.opt_disc_learning_rate)
+    checkpoint = torch.load(
+        "models/shape_disc_optimizer.pt", map_location=args.device)
+    shape_disc_optimizer.load_state_dict(checkpoint)
 
     J_Regressor_optimizer = optim.Adam(
-        J_regressor_retrained.parameters(), lr=args.j_reg_lr)
+        [J_regressor_retrained], lr=args.j_reg_lr)
 
     loss_function = nn.MSELoss()
 
-    # j_reg_mask = utils.find_j_reg_mask(J_regressor)
+    j_reg_mask = utils.find_j_reg_mask(J_regressor)
 
-    data = data_set("train")
+    # data = data_set("train")
+    data = data_set("validation")
     val_data = data_set("validation")
 
     loader = torch.utils.data.DataLoader(
@@ -136,10 +245,12 @@ def optimize_pose_refiner():
     normalize = transforms.Normalize(
         (0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
 
-    for epoch in range(5):
+    eval_before_opt = []
+    eval_after_opt = []
+
+    for epoch in range(1):
 
         iterator = iter(loader)
-        val_iterator = iter(val_loader)
 
         for iteration in tqdm(range(len(loader))):
 
@@ -174,38 +285,58 @@ def optimize_pose_refiner():
             batch["orient"] = spin_pred_pose[:, 0].unsqueeze(1).clone()
             batch["betas"] = spin_pred_betas.clone()
 
-            # optimize_parameters = [batch["pose"],
-            #                        batch["orient"], batch["betas"], batch["cam"]]
             optimize_parameters = [batch["pose"],
-                                   batch["orient"], batch["betas"]]
+                                   batch["orient"], batch["betas"], batch["cam"]]
 
             for item in optimize_parameters:
                 item.requires_grad = True
 
             this_batch_optimizer = optim.Adam(
+                [batch["cam"]], lr=1e-2)
+
+            for i in range(1000):
+            # for i in range(0):
+
+                joints_2d = return_2d_joints(
+                    batch, smpl, J_regressor=J_regressor, mask=j_reg_mask)
+                loss_j2d = loss_function(batch['gt_j2d'], joints_2d[..., :2])
+
+                this_batch_optimizer.zero_grad()
+                loss_j2d.backward()
+                this_batch_optimizer.step()
+
+            this_batch_optimizer = optim.Adam(
                 optimize_parameters, lr=1e-2)
 
-            # new_joints_2d = return_2d_joints(
-            #     batch, smpl, J_regressor=J_regressor_retrained, mask=j_reg_mask)
 
-            # pred_rotmat_orient = rot6d_to_rotmat(
-            #     batch['orient'].reshape(-1, 6)).view(-1, 1, 3, 3)
+            # render the poses and perform valuation on IoU and Circle
 
-            # pred_rotmat_pose = rot6d_to_rotmat(
-            #     batch['pose'].reshape(-1, 6)).view(-1, 23, 3, 3)
 
-            # pred_vertices = smpl(global_orient=pred_rotmat_orient, body_pose=pred_rotmat_pose,
-            #                      betas=batch["betas"], pose2rot=False).vertices
 
-            # batch["pred_vertices"] = pred_vertices
+            # # VIsualize
+            pred_rotmat_orient = rot6d_to_rotmat(
+                batch['orient'].reshape(-1, 6)).view(-1, 1, 3, 3)
 
-            # joints_2d = return_2d_joints(
-            #     batch, smpl, J_regressor=J_regressor)
-            # utils.render_batch(silhouette_renderer, batch, "og", [
-            #                    new_joints_2d, joints_2d, batch["gt_j2d"]])
-            # exit()
+            pred_rotmat_pose = rot6d_to_rotmat(
+                batch['pose'].reshape(-1, 6)).view(-1, 23, 3, 3)
+            spin_joints_2d = return_2d_joints(
+                batch, smpl, J_regressor=SPIN_J_regressor)
+            new_joints_2d = return_2d_joints(
+                batch, smpl, J_regressor=J_regressor_retrained, mask=j_reg_mask)
+            joints_2d = return_2d_joints(
+                batch, smpl, J_regressor=J_regressor, mask=j_reg_mask)
 
-            for i in range(10):
+            img = render_mesh(smpl, silhouette_renderer, batch["betas"], pred_rotmat_orient, pred_rotmat_pose, batch)
+
+            eval_before_opt.append(eval(img, batch['mask_rcnn']))
+            print("torch.mean(eval_before_opt)")
+            print(torch.mean(torch.tensor(eval_before_opt)))
+            viz(img, batch['mask_rcnn'], batch['spin_image'], spin_joints_2d, new_joints_2d, joints_2d, "")
+            exit()
+
+
+
+            for i in range(100):
 
                 pred_rotmat_orient = rot6d_to_rotmat(
                     batch['orient'].reshape(-1, 6)).view(-1, 1, 3, 3)
@@ -213,39 +344,24 @@ def optimize_pose_refiner():
                 pred_rotmat_pose = rot6d_to_rotmat(
                     batch['pose'].reshape(-1, 6)).view(-1, 23, 3, 3)
 
-                pred_vertices = smpl(global_orient=pred_rotmat_orient.detach(), body_pose=pred_rotmat_pose.detach(),
-                            betas=batch["betas"].detach(), pose2rot=False).vertices
+                pred_joints = utils.find_joints(
+                    smpl, batch["betas"], pred_rotmat_orient, pred_rotmat_pose, J_regressor, mask=j_reg_mask)
 
-                pred_joints = J_regressor(pred_vertices)
-                pred_joints = utils.move_pelvis(pred_joints)
+                joints_2d = return_2d_joints(
+                    batch, smpl, J_regressor=J_regressor)
+                loss_j2d = loss_function(batch['gt_j2d'], joints_2d[..., :2])
+                img = render_mesh(smpl, silhouette_renderer, batch["betas"], pred_rotmat_orient, pred_rotmat_pose, batch)
+                silhouette_loss = loss_function(img, batch['mask_rcnn'])
 
-                joint_loss = loss_function(
-                    pred_joints, batch['gt_j3d']/1000)
-
-                # pred_vertices = smpl(global_orient=pred_rotmat_orient, body_pose=pred_rotmat_pose,
-                #                      betas=batch["betas"], pose2rot=False).vertices
-
-                # batch["pred_vertices"] = pred_vertices
-
-                # batch["pred_vertices"] *= 2
-                # batch["pred_vertices"][..., :2] *= -1
-
-                # rendered_silhouette = silhouette_renderer(batch)
-                # rendered_silhouette = rendered_silhouette[:, 3].unsqueeze(1)
-                # silhouette_loss = loss_function(
-                #     rendered_silhouette[batch["valid"]], batch["mask_rcnn"][batch["valid"]])
-
-                # joints_2d = return_2d_joints(
-                #     batch, smpl, J_regressor=J_regressor)
-
-                # print("joints_2d")
-                # print(joints_2d)
-                # print(joints_2d.shape)
-                # print("batch['gt_j2d']")
-                # print(batch['gt_j2d'])
-                # print(batch['gt_j2d'].shape)
+                # print("img.shape")
+                # print(img.shape)
+                # print("batch['mask_rcnn'].shape")
+                # print(batch['mask_rcnn'].shape)
+                # print(silhouette_loss.item())
                 # exit()
-                # loss_2d = loss_function(batch['gt_j2d'], joints_2d[..., :2])
+                
+                joint_loss = loss_function(utils.move_pelvis(
+                    pred_joints), batch['gt_j3d']/1000)
 
                 pred_disc = pose_discriminator(
                     torch.cat([batch['orient'], batch['pose']], dim=1))
@@ -258,28 +374,41 @@ def optimize_pose_refiner():
                 shape_discriminated_loss = loss_function(pred_shape_disc, torch.ones(
                     pred_shape_disc.shape).to(args.device))
 
-                # opt_loss = silhouette_loss*100+joint_loss*10000 + \
-                #     pose_discriminated_loss*10+shape_discriminated_loss*10
-                # opt_loss = loss_2d/10+joint_loss*10000 + \
-                #     pose_discriminated_loss*10+shape_discriminated_loss*10
-                # opt_loss = joint_loss*10000 + \
-                #     pose_discriminated_loss*10+shape_discriminated_loss*10
-                opt_loss = joint_loss
+                opt_loss = loss_j2d/100+silhouette_loss*100+joint_loss*10000 + \
+                    pose_discriminated_loss*10+shape_discriminated_loss*10
 
-                # print(loss_2d/10)
-                print(joint_loss*10000)
-                print(pose_discriminated_loss*10)
-                print(shape_discriminated_loss*10)
-                print()
+                if i%10==0:
+                    print(loss_j2d/100)
+                    print(silhouette_loss*100)
+                    print(joint_loss*10000)
+                    print(pose_discriminated_loss*10)
+                    print(shape_discriminated_loss*10)
+                    print()
                 
                 this_batch_optimizer.zero_grad()
                 opt_loss.backward()
-                print("batch['pose'].grad")
-                print(batch['pose'].grad)
-                exit()
                 this_batch_optimizer.step()
 
-            exit()
+
+            # if((iteration+1)%100==0):
+            print("rendering")
+
+            spin_joints_2d = return_2d_joints(
+                batch, smpl, J_regressor=SPIN_J_regressor)
+            new_joints_2d = return_2d_joints(
+                batch, smpl, J_regressor=J_regressor_retrained, mask=j_reg_mask)
+            joints_2d = return_2d_joints(
+                batch, smpl, J_regressor=J_regressor, mask=j_reg_mask)
+
+            img = render_mesh(smpl, silhouette_renderer, batch["betas"], pred_rotmat_orient, pred_rotmat_pose, batch)
+
+            eval_after_opt.append(eval(img, batch['mask_rcnn']))
+            print("torch.mean(eval_after_opt)")
+            print(torch.mean(torch.tensor(eval_after_opt)))
+
+            # viz(img, batch['mask_rcnn'], batch['spin_image'], batch['gt_j2d'], spin_joints_2d, joints_2d, "after_joints")
+            # exit()
+            # exit()
 
             # new_joints_2d = return_2d_joints(
             #     batch, smpl, J_regressor=new_J_regressor, mask=j_reg_mask)
@@ -319,16 +448,10 @@ def optimize_pose_refiner():
             pred_rotmat_pose = rot6d_to_rotmat(
                 batch['pose'].reshape(-1, 6)).view(-1, 23, 3, 3)
 
-            pred_vertices = smpl(global_orient=pred_rotmat_orient.detach(), body_pose=pred_rotmat_pose.detach(),
-                         betas=batch["betas"].detach(), pose2rot=False).vertices
-
-            pred_joints = J_regressor_retrained(pred_vertices)
-            pred_joints = utils.move_pelvis(pred_joints)
-
-            # pred_joints = utils.find_joints(
-            #     smpl, batch["betas"].detach(), pred_rotmat_orient.detach(), pred_rotmat_pose.detach(), J_regressor_retrained, mask=j_reg_mask)
-            j_regressor_error = loss_function(
-                pred_joints, batch['gt_j3d']/1000)
+            pred_joints = utils.find_joints(
+                smpl, batch["betas"].detach(), pred_rotmat_orient.detach(), pred_rotmat_pose.detach(), J_regressor_retrained, mask=j_reg_mask)
+            j_regressor_error = loss_function(utils.move_pelvis(
+                pred_joints), batch['gt_j3d']/1000)
             J_Regressor_optimizer.zero_grad()
             j_regressor_error.backward()
             J_Regressor_optimizer.step()
@@ -336,12 +459,8 @@ def optimize_pose_refiner():
             mpjpe_new_opt, pampjpe_new_opt = utils.evaluate(
                 pred_joints, batch['gt_j3d'])
 
-            pred_vertices = smpl(global_orient=pred_rotmat_orient.detach(), body_pose=pred_rotmat_pose.detach(),
-                         betas=batch["betas"].detach(), pose2rot=False).vertices
-
-            pred_joints = J_regressor(pred_vertices)
-
-            pred_joints = utils.move_pelvis(pred_joints) 
+            pred_joints = utils.find_joints(
+                smpl, batch["betas"].detach(), pred_rotmat_orient.detach(), pred_rotmat_pose.detach(), J_regressor, mask=j_reg_mask)
 
             mpjpe_old_opt, pampjpe_old_opt = utils.evaluate(
                 pred_joints, batch['gt_j3d'])
@@ -362,76 +481,23 @@ def optimize_pose_refiner():
                         "pampjpe difference": pampjpe_new_opt.item()-pampjpe_old_opt.item(),
                     })
 
-            # if((iteration+1) % 1000 == 0):
-            if(False):
+            # if(args.wandb_log and (iteration+1) % 100 == 0):
 
-                pred_vertices = smpl(global_orient=pred_rotmat_orient, body_pose=pred_rotmat_pose,
-                                     betas=batch["betas"], pose2rot=False).vertices
+            #     print("saving model and regressor")
 
-                batch["pred_vertices"] = pred_vertices
+            #     torch.save(pose_discriminator.state_dict(),
+            #                f"models/pose_discriminator.pt")
+            #     torch.save(disc_optimizer.state_dict(),
+            #                f"models/disc_optimizer.pt")
 
-                batch["pred_vertices"] *= 2
-                batch["pred_vertices"][..., :2] *= -1
+            #     torch.save(shape_discriminator.state_dict(),
+            #                f"models/shape_discriminator.pt")
+            #     torch.save(shape_disc_optimizer.state_dict(),
+            #                f"models/shape_disc_optimizer.pt")
 
+            #     torch.save(J_regressor_retrained,
+            #                "models/retrained_J_Regressor.pt")
 
-                rendered_img = silhouette_renderer(batch)
-
-                drawing = (rendered_img[:, 3].unsqueeze(1).expand(
-                    batch['spin_image'].shape)*.5+batch['spin_image']*.5)
-
-                blt = utils.torch_img_to_np_img(drawing)
-
-                rendered_silhouette = silhouette_renderer(batch)
-                rendered_silhouette = rendered_silhouette[:, 3].unsqueeze(1)
-
-                import matplotlib.pyplot as plt
-                from matplotlib.patches import Circle
-                for i in range(blt.shape[0]):
-
-                    plt.imshow(utils.torch_img_to_np_img(drawing)[i])
-
-                    ax = plt.gca()
-
-                    plt.savefig(
-                        f"output/refining_image_{i:03d}_2.png", dpi=300)
-                    plt.close()
-
-                    plt.imshow(utils.torch_img_to_np_img(
-                        rendered_silhouette)[i])
-
-                    ax = plt.gca()
-
-                    plt.savefig(
-                        f"output/refining_image_{i:03d}_1.png", dpi=300)
-                    plt.close()
-
-                    plt.imshow(utils.torch_img_to_np_img(
-                        batch["mask_rcnn"])[i])
-
-                    ax = plt.gca()
-
-                    plt.savefig(
-                        f"output/refining_image_{i:03d}_0.png", dpi=300)
-                    plt.close()
-
-            #     exit()
-
-            if(args.wandb_log and (iteration+1) % 1000 == 0):
-
-                print("saving model and regressor")
-
-                torch.save(pose_discriminator.state_dict(),
-                           f"models/pose_discriminator_epoch_{epoch}.pt")
-                torch.save(disc_optimizer.state_dict(),
-                           f"models/disc_optimizer_epoch_{epoch}.pt")
-
-                torch.save(shape_discriminator.state_dict(),
-                           f"models/shape_discriminator_epoch_{epoch}.pt")
-                torch.save(shape_disc_optimizer.state_dict(),
-                           f"models/shape_disc_optimizer_epoch_{epoch}.pt")
-
-                torch.save(J_regressor_retrained.state_dict(),
-                           "models/reretrained_J_Regressor.pt")
 
 
 def optimize_network():

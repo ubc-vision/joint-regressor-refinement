@@ -6,3 +6,4 @@ models/
 **/*.pyc
 SPIN/
 data/
+output/

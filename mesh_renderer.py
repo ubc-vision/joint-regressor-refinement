@@ -80,7 +80,7 @@ class Mesh_Renderer(nn.Module):
 
         # self.faces = torch.stack([self.faces]*args.batch_size).to(args.device)
 
-    def forward(self, batch):
+    def forward(self, batch, smpl_verts):
 
         batch_size = batch["image"].shape[0]
 
@@ -118,7 +118,7 @@ class Mesh_Renderer(nn.Module):
         # batch["pred_vertices"][..., :2] *= -1`
 
         meshes = Meshes(
-            verts=batch["pred_vertices"],
+            verts=smpl_verts,
             faces=torch.stack([self.faces]*batch_size).to(args.device),
             textures=self.textures
         )

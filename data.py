@@ -137,7 +137,7 @@ class data_set(Dataset):
         repositioned_j2d[..., 0] -= min_x
         repositioned_j2d[..., 1] -= min_y
         repositioned_j2d /= scale
-        repositioned_j2d /= 1000/256
+        repositioned_j2d /= 1000/224
 
         output_dict = {
             # "image_name": self.images[index],
