@@ -1,21 +1,10 @@
 import wandb
-# from train import train_render_model, create_buffer
-# from test import test_render_model
-from args import args
+from scripts.args import args
 
-import torch
-# from crop_model import Crop_Model
+from scripts.test import test_pose_refiner_model, test_pose_refiner_model_VIBE_MEVA
+from scripts.optimize import optimize_pose_refiner
 
-# from render_model import Render_Model
-from train import train_pose_refiner_model, train_pose_refiner_offset
-from test import test_pose_refiner_model, test_pose_refiner_model_VIBE_MEVA
-from optimize import optimize_pose_refiner
-
-from utils import utils
-
-# from utils import h5py_creator
-
-# from visualizer import draw_gradients
+from scripts import utils
 
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning,

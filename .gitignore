@@ -1,7 +1,6 @@
 __pycache__/
 wandb/
 debug/
-models/
 **/__pycache__/
 **/*.pyc
 SPIN/
