@@ -1,5 +1,11 @@
 # A Simple Method to Boost Human Pose Estimation Accuracy by Correcting the Joint Regressor for the Human3.6m Dataset
 
+Code repository for the paper:\
+**A Simple Method to Boost Human Pose Estimation Accuracy by Correcting the Joint Regressor for the Human3.6m Dataset**\
+Eric Hedlin, Helge Rhodin, Kwang Moo Yi\
+CRV 2022\
+[[paper](https://arxiv.org/abs/2205.00076)]
+
 ![teaser](teaser.png)
 
 ## Using the joint regressor from the paper
